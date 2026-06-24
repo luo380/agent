@@ -15,6 +15,10 @@ Hard rules:
 7. This includes `package.json`, `vite.config.js`, `.vue`, `.js`, `.css`, `.md`, and related frontend files.
 8. If Vite shows `Unexpected token`, `invalid JSON`, or PostCSS config load errors, check file encoding first.
 
+9. Do not automatically restart frontend or backend services unless the user explicitly asks.
+10. Do not automatically run build, compile, or dev restart commands unless the user explicitly asks. After code changes, tell the user what they need to restart themselves.
+11. In the conversation workspace, the left sidebar and secondary task panel must keep a fixed viewport height and use independent scrolling. They must not expand just because the main conversation area becomes taller.
+
 Page rules:
 1. Login, register, and workspace pages must stay in one consistent Ant Design Vue visual system.
 2. After login succeeds, the default landing page is the conversation workspace, not a traditional dashboard.
