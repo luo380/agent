@@ -12,6 +12,7 @@ from api.schemas.session import (
     SessionResponse,
 )
 from core.db.models import Agent, ChatSession, Message, User, DEFAULT_SESSION_TITLE, now
+from core.db.session import SessionLocal
 from core.service.llm import get_default_model, get_llm_client
 
 router = APIRouter()
@@ -162,7 +163,6 @@ def chat_stream(
     for role, message_content in history_rows:
         model_messages.append({'role': role, 'content': message_content})
 
-    # 生成器在 FastAPI 依赖关闭后才执行，因此必须自己管理一个独立的 Session
     async def event_generator():
         assistant_parts: list[str] = []
         inner_db = SessionLocal()
@@ -196,7 +196,6 @@ def chat_stream(
             if not assistant_text:
                 assistant_text = '抱歉，这次我没有生成有效回复。'
 
-            # 在 inner_db 内写入 assistant message，并按需更新 session 标题
             inner_session = (
                 inner_db.query(ChatSession).filter(ChatSession.id == session_id).first()
             )
@@ -206,13 +205,16 @@ def chat_stream(
                 content=assistant_text,
             )
             inner_db.add(assistant_message)
+
             if inner_session and (
-                not inner_session.title.strip()
-                or inner_session.title.strip() == DEFAULT_SESSION_TITLE
+                    not inner_session.title.strip()
+                    or inner_session.title.strip() == DEFAULT_SESSION_TITLE
             ):
                 inner_session.title = content[:20] or DEFAULT_SESSION_TITLE
+
             if inner_session:
                 inner_session.updated_at = now()
+
             inner_db.commit()
             inner_db.refresh(assistant_message)
 
@@ -222,12 +224,30 @@ def chat_stream(
                     'message': MessageResponse.model_validate(assistant_message).model_dump(mode='json')
                 },
             )
+
         except Exception as exc:
             try:
-                inner_db.rollback()
+                partial_text = ''.join(assistant_parts).strip()
+                if partial_text:
+                    inner_session = (
+                        inner_db.query(ChatSession).filter(ChatSession.id == session_id).first()
+                    )
+                    assistant_message = Message(
+                        session_id=session_id,
+                        role='assistant',
+                        content=partial_text,
+                    )
+                    inner_db.add(assistant_message)
+
+                    if inner_session:
+                        inner_session.updated_at = now()
+
+                    inner_db.commit()
             except Exception:
-                pass
+                inner_db.rollback()
+
             yield sse_event('error', {'message': str(exc)})
+
         finally:
             try:
                 inner_db.close()
