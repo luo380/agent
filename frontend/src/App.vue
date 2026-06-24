@@ -59,22 +59,6 @@
                 </a-button>
               </div>
 
-              <div class="panel-block">
-                <div class="block-title">快捷操作</div>
-                <div class="shortcut-grid">
-                  <button
-                    v-for="action in sessionShortcuts"
-                    :key="action.label"
-                    type="button"
-                    class="shortcut-card"
-                    @click="handleSessionShortcut(action)"
-                  >
-                    <span class="shortcut-title">{{ action.label }}</span>
-                    <span class="shortcut-copy">{{ action.description }}</span>
-                  </button>
-                </div>
-              </div>
-
               <div class="panel-block is-fill">
                 <div class="block-row">
                   <div class="block-title">会话列表</div>
@@ -89,17 +73,39 @@
                 </div>
 
                 <div v-else-if="activeAgentId && filteredSessions.length" class="session-list">
-                  <button
+                  <div
                     v-for="session in filteredSessions"
                     :key="session.id"
-                    type="button"
-                    class="session-item"
+                    class="session-item-row"
                     :class="{ 'is-active': session.id === activeSessionId }"
-                    @click="activeSessionId = session.id"
                   >
-                    <span class="session-title">{{ session.title }}</span>
-                    <span class="session-time">{{ formatTime(session.updated_at) }}</span>
-                  </button>
+                    <button
+                      type="button"
+                      class="session-item"
+                      :class="{ 'is-active': session.id === activeSessionId }"
+                      @click="activeSessionId = session.id"
+                    >
+                      <span class="session-title">{{ session.title }}</span>
+                      <span class="session-time">{{ formatTime(session.updated_at) }}</span>
+                    </button>
+                    <a-popconfirm
+                      title="删除这个对话？"
+                      description="删除后将无法恢复该会话消息。"
+                      ok-text="删除"
+                      cancel-text="取消"
+                      @confirm="deleteSession(session.id)"
+                    >
+                      <button
+                        type="button"
+                        class="session-delete-button"
+                        :disabled="deletingSessionId === session.id"
+                        :aria-label="'删除会话 ' + session.title"
+                        @click.stop
+                      >
+                        {{ deletingSessionId === session.id ? '...' : '删' }}
+                      </button>
+                    </a-popconfirm>
+                  </div>
                 </div>
 
                 <div v-else class="section-empty">
@@ -552,6 +558,7 @@ const loginSubmitting = ref(false);
 const creatingAgent = ref(false);
 const creatingSession = ref(false);
 const sendingMessage = ref(false);
+const deletingSessionId = ref(null);
 
 const composerRef = ref(null);
 const currentToken = ref('');
@@ -625,19 +632,6 @@ const heroHighlights = [
     index: '03',
     title: '状态清晰可见',
     copy: '加载中、接口报错、注册成功、流式回复中都在页面内明确反馈，便于联调和排查。',
-  },
-];
-
-const sessionShortcuts = [
-  {
-    label: '发起新会话',
-    description: '为当前智能体快速开一个新的上下文窗口。',
-    action: 'new-session',
-  },
-  {
-    label: '聚焦输入区',
-    description: '回到右侧主会话输入框，继续当前任务。',
-    action: 'focus-composer',
   },
 ];
 
@@ -780,16 +774,6 @@ function selectTool(item) {
   activeToolKey.value = item.key;
 }
 
-function handleSessionShortcut(action) {
-  if (action.action === 'new-session') {
-    createNewSession();
-    return;
-  }
-  if (action.action === 'focus-composer') {
-    focusComposer();
-  }
-}
-
 function focusComposer() {
   nextTick(() => {
     const instance = composerRef.value;
@@ -927,6 +911,37 @@ async function createNewSession(title = DEFAULT_SESSION_TITLE) {
     return null;
   } finally {
     creatingSession.value = false;
+  }
+}
+
+async function deleteSession(sessionId) {
+  if (!sessionId) return;
+  deletingSessionId.value = sessionId;
+  const deletingActive = activeSessionId.value === sessionId;
+  const currentList = filteredSessions.value.slice();
+  const currentIndex = currentList.findIndex((item) => item.id === sessionId);
+  const fallbackSession = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
+
+  try {
+    await apiJson('/sessions/session/' + sessionId, {
+      method: 'DELETE',
+    });
+
+    sessions.value = sessions.value.filter((item) => item.id !== sessionId);
+
+    if (deletingActive) {
+      activeSessionId.value = fallbackSession?.id || null;
+      if (!fallbackSession) {
+        messages.value = [];
+      }
+    }
+
+    setWorkspaceNotice('会话已删除。', 'success');
+    await loadSessions();
+  } catch (error) {
+    setWorkspaceNotice(error?.message || '删除会话失败', 'error');
+  } finally {
+    deletingSessionId.value = null;
   }
 }
 
