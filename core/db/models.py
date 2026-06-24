@@ -35,7 +35,8 @@ class Agent(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now, nullable=False)
-    welcome_message: Mapped[str] = mapped_column(Text, default='', nullable=False)
+    welcome_message: Mapped[str] = mapped_column(Text, nullable=False)
+
 
 
 class ChatSession(Base):
