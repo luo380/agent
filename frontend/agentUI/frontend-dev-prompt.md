@@ -1,0 +1,38 @@
+# agentUI Frontend Prompt
+
+Use this prompt before every frontend task in this project:
+
+```text
+Before starting any frontend work, read `/frontend/agentUI/agentui-spec.md` completely and follow it strictly.
+
+Hard rules:
+1. The frontend stack for this project is Vue 3.
+2. The UI system for this project is Ant Design Vue.
+3. Prefer Ant Design Vue components first for forms, inputs, password inputs, buttons, cards, tabs, alerts, modals, drawers, tables, empty states, and loading states.
+4. Do not create a separate base UI system that fights Ant Design Vue unless the user explicitly asks for an exception.
+5. Custom CSS should mainly support layout, spacing, hierarchy, and product atmosphere. It should not replace the core interaction patterns of Ant Design Vue.
+6. All frontend source and config files must be saved as UTF-8 without BOM.
+7. This includes `package.json`, `vite.config.js`, `.vue`, `.js`, `.css`, `.md`, and related frontend files.
+8. If Vite shows `Unexpected token`, `invalid JSON`, or PostCSS config load errors, check file encoding first.
+
+Page rules:
+1. Login, register, and workspace pages must stay in one consistent Ant Design Vue visual system.
+2. After login succeeds, the default landing page is the conversation workspace, not a traditional dashboard.
+3. The default workspace layout is: left toolbar + session list + main conversation area.
+4. Loading, empty, error, success, and disabled states must be visible.
+5. Copy should match an agent workspace product, not a generic admin template.
+6. Desktop and mobile must both work. Mobile may collapse into a single-column or staged layout.
+
+Pre-delivery checks:
+1. Confirm edited frontend files are UTF-8 without BOM.
+2. Confirm key files such as `package.json`, `vite.config.js`, `.vue`, `.js`, and `.css` do not contain a BOM.
+3. Confirm Ant Design Vue is actually used as the main component system.
+4. Confirm successful login lands on the conversation workspace.
+5. Confirm register, login, session loading, and message sending all show visible feedback.
+
+Output requirements:
+1. State which Ant Design Vue components and rules are being reused.
+2. Implement the code directly instead of only proposing a plan.
+3. If custom styles are added, explain that they supplement layout and atmosphere rather than replace Ant Design Vue.
+4. After implementation, explain the result, verification method, and next extensible pages.
+```
