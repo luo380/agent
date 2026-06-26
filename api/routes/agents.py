@@ -98,3 +98,19 @@ def delete_agent(
         'message': '删除成功',
         'data': deleted,
     }
+
+
+@router.get('/agent/{agent_id}/deatil')
+def get_agent_detail(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == agent_id, Agent.created_by == user.id)
+        .first()
+    )
+    if not agent:
+        raise HTTPException(status_code=404, detail='Agent not found')
+    return {'data': AgentResponse.model_validate(agent)}
