@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from api.deps import get_db, get_current_user
+from api.deps import get_current_user, get_db
 from api.schemas.agent import AgentCreateRequest, AgentResponse, AgentUpdateRequest
-from core.db.models import User, Agent, ChatSession
+from core.db.models import Agent, User, ChatSession
 
 router = APIRouter()
 
@@ -62,6 +62,8 @@ def update_agent(
     agent.welcome_message = payload.welcome_message.strip()
     agent.model = payload.model.strip()
     agent.temperature = payload.temperature
+
+
     db.commit()
     db.refresh(agent)
     return {'data': AgentResponse.model_validate(agent)}

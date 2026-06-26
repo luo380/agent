@@ -2,19 +2,18 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 class AgentCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=160)
-    system_prompt: str = Field(default="", max_length=20000)
-    welcome_message: str = Field(default="", max_length=2000)
-    model: str = Field(default="qwen/qwen3-1.7b", min_length=1, max_length=120)
+    system_prompt: str = Field(default='', max_length=20000)
+    welcome_message: str = Field(default='', max_length=2000)
+    model: str = Field(default='qwen/qwen3-1.7b', min_length=1, max_length=120)
     temperature: float = Field(default=0.2, ge=0, le=2)
 
 
 class AgentUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=160)
-    system_prompt: str = Field(default="", max_length=20000)
-    welcome_message: str = Field(default="", max_length=2000)
+    system_prompt: str = Field(default='', max_length=20000)
+    welcome_message: str = Field(default='', max_length=2000)
     model: str = Field(min_length=1, max_length=120)
     temperature: float = Field(ge=0, le=2)
 
