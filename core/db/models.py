@@ -30,6 +30,7 @@ class Agent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, default='', nullable=False)
+    welcome_message: Mapped[str] = mapped_column(Text, default='', nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.4, nullable=False)
     created_by: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True, nullable=False)
