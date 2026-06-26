@@ -26,7 +26,7 @@
 
             <div class="rail-bottom">
               <a-avatar class="rail-avatar">{{ userInitials }}</a-avatar>
-              <a-button type="text" danger class="rail-logout" @click="logout">退出</a-button>
+              <a-button type="text" danger class="rail-logout" @click="logout">退出登录</a-button>
             </div>
           </aside>
 
@@ -89,7 +89,7 @@
                       <span class="session-time">{{ formatTime(session.updated_at) }}</span>
                     </button>
                     <a-popconfirm
-                      title="删除这个对话？"
+                      title="删除这个会话？"
                       description="删除后将无法恢复该会话消息。"
                       ok-text="删除"
                       cancel-text="取消"
@@ -153,7 +153,7 @@
                 <div class="shortcut-grid single-column">
                   <button type="button" class="shortcut-card" @click="createDemoAgent">
                     <span class="shortcut-title">创建示例智能体</span>
-                    <span class="shortcut-copy">在没有智能体时，补一个用于联调的标准示例。</span>
+                    <span class="shortcut-copy">当你还没有配置智能体时，可以先生成一个联调用的标准示例。</span>
                   </button>
                   <button type="button" class="shortcut-card" @click="focusComposer">
                     <span class="shortcut-title">继续当前对话</span>
@@ -228,160 +228,285 @@
       </a-layout-sider>
 
       <a-layout-content class="workspace-content">
-        <header class="workspace-header">
-          <div>
-            <a-typography-title :level="3" class="workspace-title">
-              {{ activeSessionTitle }}
-            </a-typography-title>
-            <a-typography-paragraph class="workspace-subtitle">
-              左侧现在是一级工具导航加二级功能面板，右侧继续保持当前会话区不跳出，便于围绕同一智能体持续协作。
-            </a-typography-paragraph>
-          </div>
-
-          <div class="header-controls">
-            <a-select
-              v-model:value="activeAgentId"
-              class="agent-select"
-              size="large"
-              :options="agentSelectOptions"
-              :loading="workspaceLoading"
-              :disabled="!agents.length"
-              placeholder="选择智能体"
-            />
-            <a-tag v-if="activeAgentModel" color="processing">{{ activeAgentModel }}</a-tag>
-          </div>
-        </header>
-
-        <a-alert
-          v-if="workspaceNotice"
-          class="workspace-alert"
-          :type="workspaceNoticeType"
-          :message="workspaceNotice"
-          show-icon
-          closable
-          @close="workspaceNotice = ''"
-        />
-
-        <section class="conversation-stage">
-          <div v-if="workspaceLoading" class="screen-state compact-state">
-            <a-spin />
-            <span>正在加载工作台...</span>
-          </div>
-
-          <div v-else-if="!agents.length" class="empty-panel">
-            <a-card :bordered="false" class="empty-card">
-              <a-empty description="当前账号下还没有智能体" />
-              <a-typography-paragraph class="empty-copy">
-                先创建一个示例智能体，我们就能继续把注册、登录、会话这条链路完整联调起来。
+        <template v-if="activeToolKey === 'agents'">
+          <header class="workspace-header agent-page-header">
+            <div>
+              <a-typography-title :level="2" class="workspace-title">智能体管理</a-typography-title>
+              <a-typography-paragraph class="workspace-subtitle">
+                在这里集中管理你的智能体，可以创建、设为当前，或者直接进入对应会话工作台。
               </a-typography-paragraph>
-              <a-button type="primary" size="large" :loading="creatingAgent" @click="createDemoAgent">
-                创建示例智能体
-              </a-button>
-            </a-card>
-          </div>
-
-          <div v-else-if="!activeSessionId" class="empty-panel">
-            <a-card :bordered="false" class="empty-card session-welcome-card">
-              <div class="welcome-mark">{{ activeAgentShort }}</div>
-              <a-typography-title :level="2" class="welcome-title">
-                从 {{ activeAgentName }} 开始一段新会话
-              </a-typography-title>
-              <a-typography-paragraph class="empty-copy">
-                这里不是传统 dashboard，而是直接进入对话工作区。你可以先新建会话，或者使用下方快捷提示发起第一条消息。
-              </a-typography-paragraph>
-              <div class="quick-prompt-list">
-                <button
-                  v-for="prompt in quickPrompts"
-                  :key="prompt"
-                  type="button"
-                  class="quick-prompt"
-                  @click="applyPrompt(prompt)"
-                >
-                  {{ prompt }}
-                </button>
-              </div>
-              <a-button type="primary" size="large" @click="createNewSession()">新建会话</a-button>
-            </a-card>
-          </div>
-
-          <div v-else-if="messagesLoading" class="message-loading">
-            <a-skeleton active :paragraph="{ rows: 6 }" />
-          </div>
-
-          <div v-else-if="messages.length" class="message-list">
-            <article
-              v-for="message in messages"
-              :key="message.id"
-              class="message-row"
-              :class="'is-' + message.role"
-            >
-              <div class="message-meta">
-                <a-avatar size="small" class="message-avatar">
-                  {{ message.role === 'assistant' ? activeAgentShort : userInitials }}
-                </a-avatar>
-                <div>
-                  <div class="message-role">{{ message.role === 'assistant' ? activeAgentName : currentUser?.name || '我' }}</div>
-                  <div class="message-time">{{ formatTime(message.created_at) }}</div>
-                </div>
-              </div>
-              <div class="message-bubble">{{ message.content }}</div>
-            </article>
-          </div>
-
-          <div v-else class="empty-panel">
-            <a-card :bordered="false" class="empty-card session-welcome-card">
-              <div class="welcome-mark">{{ activeAgentShort }}</div>
-              <a-typography-title :level="2" class="welcome-title">
-                当前会话还没有消息
-              </a-typography-title>
-              <a-typography-paragraph class="empty-copy">
-                你可以直接输入问题，或者点一个快捷提示，把当前智能体拉进实际工作语境里。
-              </a-typography-paragraph>
-              <div class="quick-prompt-list">
-                <button
-                  v-for="prompt in quickPrompts"
-                  :key="prompt"
-                  type="button"
-                  class="quick-prompt"
-                  @click="applyPrompt(prompt)"
-                >
-                  {{ prompt }}
-                </button>
-              </div>
-            </a-card>
-          </div>
-        </section>
-
-        <footer class="composer-footer">
-          <a-card :bordered="false" class="composer-card">
-            <a-textarea
-              ref="composerRef"
-              v-model:value="draftMessage"
-              :auto-size="{ minRows: 3, maxRows: 7 }"
-              :disabled="!agents.length || sendingMessage"
-              :placeholder="composerPlaceholder"
-              @keydown="handleComposerKeydown"
-            />
-
-            <div class="composer-toolbar">
-              <div class="composer-tags">
-                <span class="composer-tag">深度思考</span>
-                <span class="composer-tag is-active">联网搜索</span>
-                <span class="composer-tag">知识库</span>
-              </div>
-
-              <a-button
-                type="primary"
-                size="large"
-                :loading="sendingMessage"
-                :disabled="!agents.length"
-                @click="sendMessage"
-              >
-                发送消息
-              </a-button>
             </div>
-          </a-card>
-        </footer>
+
+            <a-button type="primary" size="large" @click="openAgentCreateModal">
+              创建智能体
+            </a-button>
+          </header>
+
+          <a-alert
+            v-if="workspaceNotice"
+            class="workspace-alert"
+            :type="workspaceNoticeType"
+            :message="workspaceNotice"
+            show-icon
+            closable
+            @close="workspaceNotice = ''"
+          />
+
+          <section class="agent-manage-stage">
+            <div v-if="workspaceLoading" class="screen-state compact-state">
+              <a-spin />
+              <span>正在加载智能体...</span>
+            </div>
+
+            <div v-else-if="!agents.length" class="empty-panel">
+              <a-card :bordered="false" class="empty-card">
+                <a-empty description="当前账号下还没有智能体" />
+                <a-typography-paragraph class="empty-copy">
+                  可以先创建一个智能体，再把它设为当前智能体并进入会话工作台。
+                </a-typography-paragraph>
+                <div class="agent-empty-actions">
+                  <a-button type="primary" size="large" @click="openAgentCreateModal">创建智能体</a-button>
+                  <a-button size="large" :loading="creatingAgent" @click="createDemoAgent">创建示例智能体</a-button>
+                </div>
+              </a-card>
+            </div>
+
+            <div v-else-if="editingAgent">
+              <AgentEditorPanel
+                :agent="editingAgent"
+                :agents="agents"
+                :active-agent-id="activeAgentId"
+                :saving="savingAgentConfig"
+                :model-options="agentEditorModelOptions"
+                :prompt-templates="agentPromptTemplates"
+                :tool-suggestions="agentToolSuggestions"
+                :knowledge-mocks="agentKnowledgeMocks"
+                @activate="setCurrentAgent"
+                @back="closeAgentEditor"
+                @chat="enterAgentConversation"
+                @delete="deleteAgent"
+                @save="saveAgentConfig"
+                @switch-agent="openAgentEditor"
+              />
+            </div>
+
+            <div v-else class="agent-manage-page">
+              <div class="agent-manage-head">
+                <div>
+                  <a-typography-title :level="4" class="agent-manage-title">我的智能体</a-typography-title>
+                  <a-typography-paragraph class="agent-manage-copy">
+                    共 {{ agents.length }} 个智能体，当前激活 {{ activeAgentName }}。
+                  </a-typography-paragraph>
+                </div>
+                <a-button type="link" @click="loadAgents">刷新列表</a-button>
+              </div>
+
+              <div class="agent-card-grid">
+                <a-card
+                  v-for="agent in agents"
+                  :key="agent.id"
+                  :bordered="false"
+                  class="agent-manage-card"
+                  :class="{ 'is-current': agent.id === activeAgentId }"
+                >
+                  <div class="agent-manage-card-top">
+                    <a-avatar class="agent-manage-avatar">{{ getShortName(agent.name, 'AI') }}</a-avatar>
+                    <a-tag v-if="agent.id === activeAgentId" color="success">当前</a-tag>
+                  </div>
+
+                  <a-typography-title :level="5" class="agent-manage-card-title">
+                    {{ agent.name }}
+                  </a-typography-title>
+                  <a-typography-paragraph class="agent-manage-card-copy">
+                    {{ summarizeAgentPrompt(agent.system_prompt) }}
+                  </a-typography-paragraph>
+
+                  <div class="agent-manage-meta">
+                    <a-tag color="processing">{{ agent.model }}</a-tag>
+                    <span>温度 {{ agent.temperature }}</span>
+                  </div>
+
+                  <div class="agent-manage-actions">
+                    <a-button
+                      :type="agent.id === activeAgentId ? 'primary' : 'default'"
+                      @click="setCurrentAgent(agent.id)"
+                    >
+                      {{ agent.id === activeAgentId ? '当前智能体' : '设为当前' }}
+                    </a-button>
+                    <a-button @click="openAgentEditor(agent.id)">编辑配置</a-button>
+                    <a-button @click="enterAgentConversation(agent.id)">进入会话</a-button>
+                    <a-popconfirm
+                      title="删除这个智能体？"
+                      description="删除后将无法恢复该智能体及其关联上下文。"
+                      ok-text="删除"
+                      cancel-text="取消"
+                      @confirm="deleteAgent(agent.id)"
+                    >
+                      <a-button danger :loading="deletingAgentId === agent.id">删除</a-button>
+                    </a-popconfirm>
+                  </div>
+                </a-card>
+              </div>
+            </div>
+          </section>
+        </template>
+
+        <template v-else>
+          <header class="workspace-header">
+            <div>
+              <a-typography-title :level="3" class="workspace-title">
+                {{ activeSessionTitle }}
+              </a-typography-title>
+              <a-typography-paragraph class="workspace-subtitle">
+                左侧负责工具导航与上下文入口，右侧保持会话工作区，便于围绕当前智能体持续协作。
+              </a-typography-paragraph>
+            </div>
+
+            <div class="header-controls">
+              <a-select
+                v-model:value="activeAgentId"
+                class="agent-select"
+                size="large"
+                :options="agentSelectOptions"
+                :loading="workspaceLoading"
+                :disabled="!agents.length"
+                placeholder="选择智能体"
+              />
+              <a-tag v-if="activeAgentModel" color="processing">{{ activeAgentModel }}</a-tag>
+            </div>
+          </header>
+
+          <a-alert
+            v-if="workspaceNotice"
+            class="workspace-alert"
+            :type="workspaceNoticeType"
+            :message="workspaceNotice"
+            show-icon
+            closable
+            @close="workspaceNotice = ''"
+          />
+
+          <section class="conversation-stage">
+            <div v-if="workspaceLoading" class="screen-state compact-state">
+              <a-spin />
+              <span>正在加载工作台...</span>
+            </div>
+
+            <div v-else-if="!agents.length" class="empty-panel">
+              <a-card :bordered="false" class="empty-card">
+                <a-empty description="当前账号下还没有智能体" />
+                <a-typography-paragraph class="empty-copy">
+                  先创建一个示例智能体，我们就能继续把注册、登录、会话这条链路完整联调起来。
+                </a-typography-paragraph>
+                <a-button type="primary" size="large" :loading="creatingAgent" @click="createDemoAgent">
+                  创建示例智能体
+                </a-button>
+              </a-card>
+            </div>
+
+            <div v-else-if="!activeSessionId" class="empty-panel">
+              <a-card :bordered="false" class="empty-card session-welcome-card">
+                <div class="welcome-mark">{{ activeAgentShort }}</div>
+                <a-typography-title :level="2" class="welcome-title">
+                  从 {{ activeAgentName }} 开始一段新会话
+                </a-typography-title>
+                <a-typography-paragraph class="empty-copy">
+                  这里不是传统 dashboard，而是直接进入对话工作区。你可以先新建会话，或者使用下方快捷提示发起第一条消息。
+                </a-typography-paragraph>
+                <div class="quick-prompt-list">
+                  <button
+                    v-for="prompt in quickPrompts"
+                    :key="prompt"
+                    type="button"
+                    class="quick-prompt"
+                    @click="applyPrompt(prompt)"
+                  >
+                    {{ prompt }}
+                  </button>
+                </div>
+                <a-button type="primary" size="large" @click="createNewSession()">新建会话</a-button>
+              </a-card>
+            </div>
+
+            <div v-else-if="messagesLoading" class="message-loading">
+              <a-skeleton active :paragraph="{ rows: 6 }" />
+            </div>
+
+            <div v-else-if="messages.length" class="message-list">
+              <article
+                v-for="message in messages"
+                :key="message.id"
+                class="message-row"
+                :class="'is-' + message.role"
+              >
+                <div class="message-meta">
+                  <a-avatar size="small" class="message-avatar">
+                    {{ message.role === 'assistant' ? activeAgentShort : userInitials }}
+                  </a-avatar>
+                  <div>
+                    <div class="message-role">{{ message.role === 'assistant' ? activeAgentName : currentUser?.name || '我' }}</div>
+                    <div class="message-time">{{ formatTime(message.created_at) }}</div>
+                  </div>
+                </div>
+                <div class="message-bubble">{{ message.content }}</div>
+              </article>
+            </div>
+
+            <div v-else class="empty-panel">
+              <a-card :bordered="false" class="empty-card session-welcome-card">
+                <div class="welcome-mark">{{ activeAgentShort }}</div>
+                <a-typography-title :level="2" class="welcome-title">
+                  当前会话还没有消息
+                </a-typography-title>
+                <a-typography-paragraph class="empty-copy">
+                  你可以直接输入问题，或者点一个快捷提示，把当前智能体拉进实际工作语境里。
+                </a-typography-paragraph>
+                <div class="quick-prompt-list">
+                  <button
+                    v-for="prompt in quickPrompts"
+                    :key="prompt"
+                    type="button"
+                    class="quick-prompt"
+                    @click="applyPrompt(prompt)"
+                  >
+                    {{ prompt }}
+                  </button>
+                </div>
+              </a-card>
+            </div>
+          </section>
+
+          <footer class="composer-footer">
+            <a-card :bordered="false" class="composer-card">
+              <a-textarea
+                ref="composerRef"
+                v-model:value="draftMessage"
+                :auto-size="{ minRows: 3, maxRows: 7 }"
+                :disabled="!agents.length || sendingMessage"
+                :placeholder="composerPlaceholder"
+                @keydown="handleComposerKeydown"
+              />
+
+              <div class="composer-toolbar">
+                <div class="composer-tags">
+                  <span class="composer-tag">深度思考</span>
+                  <span class="composer-tag is-active">联网搜索</span>
+                  <span class="composer-tag">知识库</span>
+                </div>
+
+                <a-button
+                  type="primary"
+                  size="large"
+                  :loading="sendingMessage"
+                  :disabled="!agents.length"
+                  @click="sendMessage"
+                >
+                  发送消息
+                </a-button>
+              </div>
+            </a-card>
+          </footer>
+        </template>
       </a-layout-content>
     </a-layout>
   </div>
@@ -535,11 +660,41 @@
       </a-card>
     </section>
   </div>
+
+  <a-modal
+    v-model:open="agentModalOpen"
+    title="创建智能体"
+    ok-text="创建"
+    cancel-text="取消"
+    :confirm-loading="creatingCustomAgent"
+    @ok="submitCreateAgent"
+    @cancel="resetAgentCreateForm"
+  >
+    <a-form layout="vertical">
+      <a-form-item label="智能体名称">
+        <a-input v-model:value="agentCreateForm.name" placeholder="例如：扫地机器人客服" />
+      </a-form-item>
+      <a-form-item label="系统提示词">
+        <a-textarea
+          v-model:value="agentCreateForm.system_prompt"
+          :auto-size="{ minRows: 4, maxRows: 8 }"
+          placeholder="描述这个智能体的职责、语气和回答边界。"
+        />
+      </a-form-item>
+      <a-form-item label="模型">
+        <a-input v-model:value="agentCreateForm.model" placeholder="qwen/qwen3-1.7b" />
+      </a-form-item>
+      <a-form-item label="温度">
+        <a-slider v-model:value="agentCreateForm.temperature" :min="0" :max="1" :step="0.1" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
 </template>
 
 <script setup>
 import { Empty } from 'ant-design-vue';
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import AgentEditorPanel from './components/AgentEditorPanel.vue';
 
 const API_PREFIX = '/api';
 const STORAGE_TOKEN_KEY = 'agent_access_token';
@@ -559,6 +714,11 @@ const creatingAgent = ref(false);
 const creatingSession = ref(false);
 const sendingMessage = ref(false);
 const deletingSessionId = ref(null);
+const deletingAgentId = ref(null);
+const savingAgentConfig = ref(false);
+const editingAgentId = ref(null);
+const agentModalOpen = ref(false);
+const creatingCustomAgent = ref(false);
 
 const composerRef = ref(null);
 const currentToken = ref('');
@@ -670,11 +830,50 @@ const loginForm = reactive({
   rememberMe: true,
 });
 
+const agentCreateForm = reactive({
+  name: '',
+  system_prompt: '',
+  model: 'qwen/qwen3-1.7b',
+  temperature: 0.2,
+});
+
+const agentPromptTemplates = [
+  {
+    key: 'customer-service',
+    title: '客服接待',
+    description: '适合售前咨询、工单分流和常见问题解答。',
+    content: '你是一名专业客服智能体，先快速理解用户诉求，再给出清晰、准确、礼貌的分步回答。遇到不确定的信息时要明确说明，并主动给出下一步建议。',
+  },
+  {
+    key: 'delivery-manager',
+    title: '交付推进',
+    description: '适合项目跟进、里程碑同步和风险提醒。',
+    content: '你是一名项目交付智能体，需要围绕目标、时间节点、风险和下一步动作组织回复。优先输出结论、阻塞点和建议动作，并保持表达简洁。',
+  },
+  {
+    key: 'product-expert',
+    title: '产品专家',
+    description: '适合功能说明、方案对比和使用引导。',
+    content: '你是一名产品方案顾问，回答时先确认用户场景，再结合产品能力给出解释、对比和推荐方案。内容要结构化，必要时补充使用注意事项。',
+  },
+];
+
+const agentToolSuggestions = ['联网搜索', '网页解析', 'HTTP 调用', '表单填写', '知识检索'];
+const agentKnowledgeMocks = [
+  { name: '产品资料库', copy: '挂载产品说明、FAQ、定价和更新说明。', state: '待接入' },
+  { name: '交付文档库', copy: '挂载实施手册、项目 SOP 和巡检文档。', state: '待接入' },
+];
+const baseAgentModelOptions = [
+  { label: 'Qwen 3 1.7B', value: 'qwen/qwen3-1.7b' },
+  { label: 'Qwen Plus', value: 'qwen-plus' },
+  { label: 'DeepSeek Chat', value: 'deepseek-chat' },
+];
+
 const passwordScore = computed(() => {
   let score = 0;
   if (registerForm.password.length >= 8) score += 1;
   if (/[A-Z]/.test(registerForm.password) && /[a-z]/.test(registerForm.password)) score += 1;
-  if (/d/.test(registerForm.password)) score += 1;
+  if (/\d/.test(registerForm.password)) score += 1;
   if (/[^A-Za-z0-9]/.test(registerForm.password)) score += 1;
   return score;
 });
@@ -690,8 +889,20 @@ const passwordLabel = computed(() => [
 ][passwordScore.value]);
 
 const currentAgent = computed(() => agents.value.find((item) => item.id === activeAgentId.value) || null);
+const editingAgent = computed(() => agents.value.find((item) => item.id === editingAgentId.value) || null);
 const activeTool = computed(() => toolItems.find((item) => item.key === activeToolKey.value) || toolItems[0]);
 const agentSelectOptions = computed(() => agents.value.map((item) => ({ label: item.name, value: item.id })));
+const agentEditorModelOptions = computed(() => {
+  const options = [...baseAgentModelOptions];
+  const seen = new Set(options.map((item) => item.value));
+  for (const agent of agents.value) {
+    if (agent.model && !seen.has(agent.model)) {
+      options.push({ label: agent.model, value: agent.model });
+      seen.add(agent.model);
+    }
+  }
+  return options;
+});
 const filteredSessions = computed(() => {
   if (!activeAgentId.value) return [];
   return sessions.value.filter((item) => item.agent_id === activeAgentId.value);
@@ -706,6 +917,12 @@ const activeSessionTitle = computed(() => {
   return activeAgentName.value + ' 会话工作台';
 });
 const composerPlaceholder = computed(() => '给 ' + activeAgentName.value + ' 发送消息，Ctrl+Enter 发送');
+
+function summarizeAgentPrompt(prompt) {
+  const text = String(prompt || '').trim();
+  if (!text) return '暂未填写系统提示词。';
+  return text.length > 68 ? text.slice(0, 68) + '...' : text;
+}
 
 function getShortName(value, fallback) {
   const text = String(value || '').trim();
@@ -747,6 +964,7 @@ function clearStoredSession() {
 function resetWorkspaceState() {
   activeAgentId.value = null;
   activeSessionId.value = null;
+  editingAgentId.value = null;
   agents.value = [];
   sessions.value = [];
   messages.value = [];
@@ -772,6 +990,9 @@ function applyPrompt(prompt) {
 
 function selectTool(item) {
   activeToolKey.value = item.key;
+  if (item.key !== 'agents') {
+    editingAgentId.value = null;
+  }
 }
 
 function focusComposer() {
@@ -780,6 +1001,111 @@ function focusComposer() {
     const textarea = instance?.resizableTextArea?.textArea || instance?.$el?.querySelector?.('textarea');
     textarea?.focus?.();
   });
+}
+
+function openAgentCreateModal() {
+  editingAgentId.value = null;
+  agentModalOpen.value = true;
+}
+
+function resetAgentCreateForm() {
+  agentCreateForm.name = '';
+  agentCreateForm.system_prompt = '';
+  agentCreateForm.model = 'qwen/qwen3-1.7b';
+  agentCreateForm.temperature = 0.2;
+}
+
+function openAgentEditor(agentId) {
+  if (!agentId) return;
+  editingAgentId.value = agentId;
+}
+
+function closeAgentEditor() {
+  editingAgentId.value = null;
+}
+
+function setCurrentAgent(agentId) {
+  activeAgentId.value = agentId;
+  setWorkspaceNotice('已切换当前智能体。', 'success');
+}
+
+async function enterAgentConversation(agentId) {
+  activeAgentId.value = agentId;
+  activeToolKey.value = 'chat';
+  await loadSessions();
+  if (activeSessionId.value) {
+    await loadMessages(activeSessionId.value);
+  } else {
+    messages.value = [];
+  }
+  setWorkspaceNotice('已进入该智能体的会话工作台。', 'success');
+}
+
+async function submitCreateAgent() {
+  if (!agentCreateForm.name.trim()) {
+    setWorkspaceNotice('请输入智能体名称。', 'warning');
+    return;
+  }
+
+  creatingCustomAgent.value = true;
+  try {
+    const result = await apiJson('/agents/create_agent', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: agentCreateForm.name.trim(),
+        system_prompt: agentCreateForm.system_prompt.trim(),
+        model: agentCreateForm.model.trim() || 'qwen/qwen3-1.7b',
+        temperature: Number(agentCreateForm.temperature) || 0.2,
+      }),
+    });
+
+    const createdAgent = result?.data || null;
+    await loadAgents();
+    if (createdAgent?.id) {
+      activeAgentId.value = createdAgent.id;
+      editingAgentId.value = createdAgent.id;
+    }
+    agentModalOpen.value = false;
+    resetAgentCreateForm();
+    setWorkspaceNotice('智能体创建成功。', 'success');
+  } catch (error) {
+    setWorkspaceNotice(error?.message || '创建智能体失败', 'error');
+  } finally {
+    creatingCustomAgent.value = false;
+  }
+}
+
+async function saveAgentConfig(payload) {
+  const targetAgentId = editingAgentId.value;
+  if (!targetAgentId) return;
+  if (!payload?.name?.trim()) {
+    setWorkspaceNotice('请输入智能体名称。', 'warning');
+    return;
+  }
+
+  savingAgentConfig.value = true;
+  try {
+    const result = await apiJson('/agents/agent/' + targetAgentId, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: payload.name.trim(),
+        system_prompt: payload.system_prompt?.trim?.() || '',
+        model: payload.model?.trim?.() || 'qwen/qwen3-1.7b',
+        temperature: Number(payload.temperature) || 0.2,
+      }),
+    });
+
+    const updatedAgent = result?.data || null;
+    if (updatedAgent?.id) {
+      agents.value = agents.value.map((item) => item.id === updatedAgent.id ? updatedAgent : item);
+    }
+    await loadAgents();
+    setWorkspaceNotice('智能体配置已保存。', 'success');
+  } catch (error) {
+    setWorkspaceNotice(error?.message || '保存智能体配置失败', 'error');
+  } finally {
+    savingAgentConfig.value = false;
+  }
 }
 
 function syncActiveSessionSelection() {
@@ -832,10 +1158,14 @@ async function loadAgents() {
   agents.value = Array.isArray(result?.data) ? result.data : [];
   if (!agents.value.length) {
     activeAgentId.value = null;
+    editingAgentId.value = null;
     return;
   }
   if (!agents.value.some((item) => item.id === activeAgentId.value)) {
     activeAgentId.value = agents.value[0].id;
+  }
+  if (editingAgentId.value && !agents.value.some((item) => item.id === editingAgentId.value)) {
+    editingAgentId.value = null;
   }
 }
 
@@ -884,6 +1214,41 @@ async function createDemoAgent() {
     setWorkspaceNotice(error?.message || '创建示例智能体失败', 'error');
   } finally {
     creatingAgent.value = false;
+  }
+}
+
+async function deleteAgent(agentId) {
+  if (!agentId) return;
+  deletingAgentId.value = agentId;
+  const deletingCurrent = activeAgentId.value === agentId;
+
+  try {
+    await apiJson('/agents/agent/' + agentId, {
+      method: 'POST',
+    });
+
+    agents.value = agents.value.filter((item) => item.id !== agentId);
+
+    if (editingAgentId.value === agentId) {
+      editingAgentId.value = null;
+    }
+
+    if (deletingCurrent) {
+      activeAgentId.value = null;
+      activeSessionId.value = null;
+      messages.value = [];
+    }
+
+    await loadAgents();
+    await loadSessions();
+    if (activeSessionId.value) {
+      await loadMessages(activeSessionId.value);
+    }
+    setWorkspaceNotice('智能体已删除。', 'success');
+  } catch (error) {
+    setWorkspaceNotice(error?.message || '删除智能体失败', 'error');
+  } finally {
+    deletingAgentId.value = null;
   }
 }
 
