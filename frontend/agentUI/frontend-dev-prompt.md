@@ -18,6 +18,9 @@ Hard rules:
 9. Do not automatically restart frontend or backend services unless the user explicitly asks.
 10. Do not automatically run build, compile, or dev restart commands unless the user explicitly asks. After code changes, tell the user what they need to restart themselves.
 11. In the conversation workspace, the left sidebar and secondary task panel must keep a fixed viewport height and use independent scrolling. They must not expand just because the main conversation area becomes taller.
+12. Agent management and agent editing must stay in the same Ant Design Vue visual system as login, register, and workspace pages.
+13. When building an agent editor, prefer a two-column builder layout: left for identity and prompt editing, right for model, retrieval, tools, and memory configuration.
+14. If some agent capabilities are not connected to backend fields yet, show explicit pending or disabled blocks instead of pretending they are already persisted.
 
 Page rules:
 1. Login, register, and workspace pages must stay in one consistent Ant Design Vue visual system.
