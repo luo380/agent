@@ -1,11 +1,11 @@
-<template>
+﻿<template>
   <section class="conversation-stage">
     <div class="conversation-layout" :class="{ 'is-trace-visible': traceVisible }">
       <div class="conversation-main">
         <div class="conversation-scroll">
           <div v-if="workspaceLoading" class="screen-state compact-state">
             <a-spin />
-            <span>正在加载工作台...</span>
+            <span>正在加载工作区...</span>
           </div>
 
           <div v-else-if="!agents.length" class="empty-panel">
@@ -97,7 +97,7 @@
             <a-textarea
               ref="composerRef"
               v-model:value="composerModel"
-              :auto-size="{ minRows: 3, maxRows: 7 }"
+              rows="3"
               :disabled="!agents.length || sendingMessage"
               :placeholder="composerPlaceholder"
               @keydown="handleComposerKeydown"

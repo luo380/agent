@@ -1,5 +1,5 @@
-<template>
-  <div>
+﻿<template>
+  <div class="chat-workspace-view">
     <header class="workspace-header">
       <div>
         <a-typography-title :level="3" class="workspace-title">
@@ -93,12 +93,12 @@ const props = defineProps({
   runTraceCurrentId: { type: [Number, String], default: null },
   sendingMessage: { type: Boolean, default: false },
   activeAgentShort: { type: String, default: 'AI' },
-  activeAgentName: { type: String, default: '智能体' },
+  activeAgentName: { type: String, default: '鏅鸿兘浣?' },
   quickPrompts: { type: Array, default: () => [] },
   messagesLoading: { type: Boolean, default: false },
   messages: { type: Array, default: () => [] },
-  userInitials: { type: String, default: '我' },
-  currentUserName: { type: String, default: '我' },
+  userInitials: { type: String, default: '鎴?' },
+  currentUserName: { type: String, default: '鎴?' },
   formatTime: { type: Function, required: true },
   draftMessage: { type: String, default: '' },
   composerPlaceholder: { type: String, default: '' },
