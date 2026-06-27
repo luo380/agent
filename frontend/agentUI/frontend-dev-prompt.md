@@ -24,6 +24,13 @@ Hard rules:
 16. Agent management and agent editing must stay in the same Ant Design Vue visual system as login, register, and workspace pages.
 17. When building an agent editor, prefer a two-column builder layout: left for identity and prompt editing, right for model, retrieval, tools, and memory configuration.
 18. If some agent capabilities are not connected to backend fields yet, show explicit pending or disabled blocks instead of pretending they are already persisted.
+19. Every frontend feature must have its own module boundary. Do not keep unrelated features inside one giant page file.
+20. Split by responsibility: page shell, feature panel, dialog, trace panel, session list, and composer should be separate components when they are independent features.
+21. Shared stateful logic should move into clearly named composables or service helpers instead of being repeatedly embedded inside a single .vue file.
+22. Avoid turning App.vue into a catch-all file. App.vue should coordinate high-level state and routing-level layout, not own every feature implementation detail.
+23. Before adding a new frontend feature, first decide its module boundary: component, composable, service, or style module, then implement inside that boundary.
+24. Organize frontend files by feature domain whenever possible, for example auth/, workspace/, agent/, chat/, trace/, instead of placing all components flat in one folder.
+25. When a feature grows beyond one component, create a dedicated feature directory and colocate its components, composables, and service helpers to keep maintenance clear.
 
 Page rules:
 1. Login, register, and workspace pages must stay in one consistent Ant Design Vue visual system.
@@ -60,3 +67,10 @@ Output requirements:
    - 检查前端构建是否通过
 8. 如果文件本身已经乱码，先修编码，再改功能；不要把“修功能”和“修乱码”混在同一次修改里。
 9. 以后凡是改前端中文文案，先读这个文件，再开始动代码。
+10. 前端每一个功能都必须有自己的模块边界，不要把会话列表、执行轨迹、输入框、弹窗、表单、工具面板等不同功能长期堆在同一个超大文件里。
+11. 拆分原则要按职责走：页面壳层、功能面板、弹窗、执行轨迹、会话列表、输入区，能独立演进的就拆成独立组件。
+12. 复用或带状态的逻辑要放进命名清晰的 composable 或 service，不要在单个 .vue 文件里不断堆接口调用和状态处理。
+13. App.vue 不能继续充当前端杂物间；它应该只负责高层级布局、页面切换和顶层状态协调，不应该承载所有功能实现细节。
+14. 每次新增前端功能前，先决定它应该落在哪个模块边界里：组件、composable、service 或样式模块，然后再开始写代码。
+15. 前端文件组织也要按功能域划分，优先按 auth/、workspace/、agent/、chat/、trace/ 这类目录归类，不要把所有组件长期平铺在同一个目录。
+16. 当某个功能不再只是一个小组件时，要为它建立独立目录，把该功能相关的组件、composable、service 就近放在一起，方便后续维护。

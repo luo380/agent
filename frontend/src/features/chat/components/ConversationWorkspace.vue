@@ -1,6 +1,6 @@
 <template>
   <section class="conversation-stage">
-    <div class="conversation-layout">
+    <div class="conversation-layout" :class="{ 'is-trace-visible': traceVisible }">
       <div class="conversation-main">
         <div class="conversation-scroll">
           <div v-if="workspaceLoading" class="screen-state compact-state">
@@ -123,12 +123,21 @@
           </a-card>
         </footer>
       </div>
+
+      <RunTracePanel
+        v-if="traceVisible"
+        :loading="runTraceLoading"
+        :trace="runTrace"
+        :error="runTraceError"
+        @refresh="$emit('retry-run-trace')"
+      />
     </div>
   </section>
 </template>
 
 <script setup>
 import { computed, nextTick, ref } from 'vue';
+import RunTracePanel from '../../workspace/trace/RunTracePanel.vue';
 
 const props = defineProps({
   workspaceLoading: { type: Boolean, default: false },
@@ -146,6 +155,10 @@ const props = defineProps({
   draftMessage: { type: String, default: '' },
   sendingMessage: { type: Boolean, default: false },
   composerPlaceholder: { type: String, default: '' },
+  traceVisible: { type: Boolean, default: false },
+  runTraceLoading: { type: Boolean, default: false },
+  runTrace: { type: Object, default: null },
+  runTraceError: { type: String, default: '' },
 });
 
 const emit = defineEmits([
@@ -154,6 +167,7 @@ const emit = defineEmits([
   'apply-prompt',
   'update:draftMessage',
   'send-message',
+  'retry-run-trace',
 ]);
 
 const composerRef = ref(null);

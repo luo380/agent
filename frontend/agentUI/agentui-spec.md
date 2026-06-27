@@ -55,9 +55,14 @@ This project uses Vue for frontend implementation and Ant Design Vue as the prim
 ## Vue Rules
 
 - Use Vue single-file components for feature pages.
+- Each frontend feature must have a clear module boundary instead of being merged into one oversized page file.
+- Prefer splitting independent areas such as session list, conversation workspace, trace panel, modal forms, and tool panels into separate components.
 - Prefer `ref`, `reactive`, and `computed` for local state.
+- Move reusable or stateful business logic into clearly named composables or service helpers.
 - Keep templates readable and aligned to page sections.
 - Keep API calls and validation logic inside the Vue component or a clearly named composable.
+- Prefer feature-oriented directory structure such as auth/, workspace/, agent/, chat/, and trace/ when modules start to grow.
+- When one feature contains multiple components and helpers, colocate them inside a dedicated feature folder rather than scattering them randomly.
 
 ## Delivery Checklist
 
@@ -70,3 +75,13 @@ Before finishing any frontend task:
 5. Confirm custom styling complements rather than fights Ant Design.
 6. Confirm the page can extend into the next product step.
 7. Confirm edited frontend files are saved as UTF-8 without BOM.
+
+## 中文模块化规则
+
+- 前端每一个功能都要有明确的模块边界，不能长期堆在同一个超大页面文件中。
+- 会话列表、执行轨迹、输入框、弹窗、表单、工具面板这类可独立演进的区域，默认拆成独立组件。
+- 可复用逻辑或带状态逻辑，优先放入命名清晰的 composable 或 service。
+- App.vue 只负责高层布局和顶层协调，不负责承载所有功能细节。
+- 开始写前端功能前，先确定它属于组件、composable、service 还是样式模块。
+- 前端目录组织也要按功能域归类，优先使用 auth/、workspace/、agent/、chat/、trace/ 这类目录结构。
+- 如果一个功能包含多个组件和辅助逻辑，就为它建立独立文件夹，把相关组件、composable、service 就近放在一起，不要四处分散。
