@@ -386,126 +386,29 @@
             @close="workspaceNotice = ''"
           />
 
-          <section class="conversation-stage">
-            <div v-if="workspaceLoading" class="screen-state compact-state">
-              <a-spin />
-              <span>正在加载工作台...</span>
-            </div>
-
-            <div v-else-if="!agents.length" class="empty-panel">
-              <a-card :bordered="false" class="empty-card">
-                <a-empty description="当前账号下还没有智能体" />
-                <a-typography-paragraph class="empty-copy">
-                  先创建一个示例智能体，我们就能继续把注册、登录、会话这条链路完整联调起来。
-                </a-typography-paragraph>
-                <a-button type="primary" size="large" :loading="creatingAgent" @click="createDemoAgent">
-                  创建示例智能体
-                </a-button>
-              </a-card>
-            </div>
-
-            <div v-else-if="!activeSessionId" class="empty-panel">
-              <a-card :bordered="false" class="empty-card session-welcome-card">
-                <div class="welcome-mark">{{ activeAgentShort }}</div>
-                <a-typography-title :level="2" class="welcome-title">
-                  从 {{ activeAgentName }} 开始一段新会话
-                </a-typography-title>
-                <a-typography-paragraph class="empty-copy">
-                  这里不是传统 dashboard，而是直接进入对话工作区。你可以先新建会话，或者使用下方快捷提示发起第一条消息。
-                </a-typography-paragraph>
-                <div class="quick-prompt-list">
-                  <button
-                    v-for="prompt in quickPrompts"
-                    :key="prompt"
-                    type="button"
-                    class="quick-prompt"
-                    @click="applyPrompt(prompt)"
-                  >
-                    {{ prompt }}
-                  </button>
-                </div>
-                <a-button type="primary" size="large" @click="createNewSession()">新建会话</a-button>
-              </a-card>
-            </div>
-
-            <div v-else-if="messagesLoading" class="message-loading">
-              <a-skeleton active :paragraph="{ rows: 6 }" />
-            </div>
-
-            <div v-else-if="messages.length" class="message-list">
-              <article
-                v-for="message in messages"
-                :key="message.id"
-                class="message-row"
-                :class="'is-' + message.role"
-              >
-                <div class="message-meta">
-                  <a-avatar size="small" class="message-avatar">
-                    {{ message.role === 'assistant' ? activeAgentShort : userInitials }}
-                  </a-avatar>
-                  <div>
-                    <div class="message-role">{{ message.role === 'assistant' ? activeAgentName : currentUser?.name || '我' }}</div>
-                    <div class="message-time">{{ formatTime(message.created_at) }}</div>
-                  </div>
-                </div>
-                <div class="message-bubble">{{ message.content }}</div>
-              </article>
-            </div>
-
-            <div v-else class="empty-panel">
-              <a-card :bordered="false" class="empty-card session-welcome-card">
-                <div class="welcome-mark">{{ activeAgentShort }}</div>
-                <a-typography-title :level="2" class="welcome-title">
-                  当前会话还没有消息
-                </a-typography-title>
-                <a-typography-paragraph class="empty-copy">
-                  你可以直接输入问题，或者点一个快捷提示，把当前智能体拉进实际工作语境里。
-                </a-typography-paragraph>
-                <div class="quick-prompt-list">
-                  <button
-                    v-for="prompt in quickPrompts"
-                    :key="prompt"
-                    type="button"
-                    class="quick-prompt"
-                    @click="applyPrompt(prompt)"
-                  >
-                    {{ prompt }}
-                  </button>
-                </div>
-              </a-card>
-            </div>
-          </section>
-
-          <footer class="composer-footer">
-            <a-card :bordered="false" class="composer-card">
-              <a-textarea
-                ref="composerRef"
-                v-model:value="draftMessage"
-                :auto-size="{ minRows: 3, maxRows: 7 }"
-                :disabled="!agents.length || sendingMessage"
-                :placeholder="composerPlaceholder"
-                @keydown="handleComposerKeydown"
-              />
-
-              <div class="composer-toolbar">
-                <div class="composer-tags">
-                  <span class="composer-tag">深度思考</span>
-                  <span class="composer-tag is-active">联网搜索</span>
-                  <span class="composer-tag">知识库</span>
-                </div>
-
-                <a-button
-                  type="primary"
-                  size="large"
-                  :loading="sendingMessage"
-                  :disabled="!agents.length"
-                  @click="sendMessage"
-                >
-                  发送消息
-                </a-button>
-              </div>
-            </a-card>
-          </footer>
+          <ConversationWorkspace
+            ref="conversationWorkspaceRef"
+            :workspace-loading="workspaceLoading"
+            :agents="agents"
+            :creating-agent="creatingAgent"
+            :active-session-id="activeSessionId"
+            :active-agent-short="activeAgentShort"
+            :active-agent-name="activeAgentName"
+            :quick-prompts="quickPrompts"
+            :messages-loading="messagesLoading"
+            :messages="messages"
+            :user-initials="userInitials"
+            :current-user-name="currentUser?.name || '我'"
+            :format-time="formatTime"
+            :draft-message="draftMessage"
+            :sending-message="sendingMessage"
+            :composer-placeholder="composerPlaceholder"
+            @create-demo-agent="createDemoAgent"
+            @create-new-session="createNewSession()"
+            @apply-prompt="applyPrompt"
+            @update:draft-message="draftMessage = $event"
+            @send-message="sendMessage"
+          />
         </template>
       </a-layout-content>
     </a-layout>
@@ -695,6 +598,7 @@
 import { Empty } from 'ant-design-vue';
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import AgentEditorPanel from './components/AgentEditorPanel.vue';
+import ConversationWorkspace from './components/ConversationWorkspace.vue';
 
 const API_PREFIX = '/api';
 const STORAGE_TOKEN_KEY = 'agent_access_token';
@@ -720,7 +624,7 @@ const editingAgentId = ref(null);
 const agentModalOpen = ref(false);
 const creatingCustomAgent = ref(false);
 
-const composerRef = ref(null);
+const conversationWorkspaceRef = ref(null);
 const currentToken = ref('');
 const currentUser = ref(null);
 const activeToolKey = ref('chat');
@@ -1441,13 +1345,6 @@ async function sendMessage() {
   }
 }
 
-function handleComposerKeydown(event) {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-    event.preventDefault();
-    sendMessage();
-  }
-}
-
 function validateRegisterForm() {
   if (!registerForm.name.trim()) return '请输入名称';
   if (!registerForm.email.trim()) return '请输入邮箱';
@@ -1559,7 +1456,7 @@ async function submitLogin() {
     currentToken.value = loginData.access_token || '';
     currentUser.value = loginData.user || null;
     loginPreview.value = JSON.stringify(result, null, 2);
-    if (loginForm.rememberMe && currentToken.value) {
+    if (currentToken.value) {
       localStorage.setItem(STORAGE_TOKEN_KEY, currentToken.value);
     } else {
       clearStoredSession();
