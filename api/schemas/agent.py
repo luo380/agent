@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 
 class AgentCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=160)
@@ -30,3 +31,8 @@ class AgentResponse(BaseModel):
     created_by: int
     created_at: datetime
     updated_at: datetime
+
+    @field_validator('welcome_message', mode='before')
+    @classmethod
+    def normalize_welcome_message(cls, value):
+        return '' if value is None else value
