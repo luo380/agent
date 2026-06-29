@@ -33,5 +33,12 @@ class Settings:
     )
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "agent_v1")
 
+    KNOWLEDGE_UPLOAD_DIR: str = os.getenv(
+        "KNOWLEDGE_UPLOAD_DIR",
+        str(BASE_DIR / "data" / "knowledge_uploads"),
+    )
+    RAG_CHUNK_SIZE: int = int(os.getenv("RAG_CHUNK_SIZE", "500"))
+    RAG_CHUNK_OVERLAP: int = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
+
 
 settings = Settings()
