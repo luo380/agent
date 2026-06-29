@@ -41,7 +41,12 @@ def get_run_detail(run_id: str,
     if not run:
         raise HTTPException(status_code=404, detail='Run not found')
 
-    steps = db.query(RunSteps).filter(RunSteps.run_id == run.id).all()
+    steps = (
+        db.query(RunSteps)
+        .filter(RunSteps.run_id == run.id)
+        .order_by(RunSteps.started_at.asc(), RunSteps.id.asc())
+        .all()
+    )
     if not steps:
         raise HTTPException(status_code=404, detail='No steps found')
 
@@ -51,4 +56,3 @@ def get_run_detail(run_id: str,
     )
 
     return {'data': data}
-
