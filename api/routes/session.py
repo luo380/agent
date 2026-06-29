@@ -288,6 +288,14 @@ def chat_stream(
         },
     )
 
+    # 提前把 ORM 关联的值“脱壳”成纯 Python 值。
+    # 因为 event_generator 是一个 async generator：真正执行的时候，
+    # 外层的 db session 已经关闭了，run/agent 都是 detached 对象，
+    # 再访问 run.id / agent.model 等属性会触发 DetachedInstanceError。
+    run_id = run.id
+    agent_model = agent.model
+    agent_temperature = agent.temperature
+
     async def event_generator():
         """
         真正的流式输出生成器。
@@ -314,12 +322,12 @@ def chat_stream(
             """
             step_llm = create_step(
                 inner_db,
-                run_id=run.id,
+                run_id=run_id,
                 step_type="llm_call",
                 step_name="调用 LLM",
                 input_payload={
-                    "model": agent.model,
-                    "temperature": agent.temperature,
+                    "model": agent_model,
+                    "temperature": agent_temperature,
                     "message_count": len(model_messages),
                 },
             )
@@ -327,9 +335,9 @@ def chat_stream(
 
             client = get_llm_client()
             stream = await client.chat.completions.create(
-                model=agent.model or get_default_model(),
+                model=agent_model or get_default_model(),
                 messages=model_messages,
-                temperature=agent.temperature,
+                temperature=agent_temperature,
                 stream=True,
             )
 
@@ -352,7 +360,7 @@ def chat_stream(
             """
             step_stream = create_step(
                 inner_db,
-                run_id=run.id,
+                run_id=run_id,
                 step_type="stream_response",
                 step_name="接收流式响应",
                 input_payload={"stream": True},
@@ -368,7 +376,7 @@ def chat_stream(
                 {
                     "session_id": session_id,
                     "message_id": user_message_id,
-                    "run_id": run.id,
+                    "run_id": run_id,
                 },
             )
 
@@ -416,7 +424,7 @@ def chat_stream(
             """
             step_save = create_step(
                 inner_db,
-                run_id=run.id,
+                run_id=run_id,
                 step_type="save_message",
                 step_name="保存助手消息",
                 input_payload={"session_id": session_id},
@@ -468,7 +476,7 @@ def chat_stream(
             """
             所有步骤都成功后，整次 Run 标记 completed。
             """
-            inner_run = inner_db.query(Runs).filter(Runs.id == run.id).first()
+            inner_run = inner_db.query(Runs).filter(Runs.id == run_id).first()
             complete_run(
                 inner_db,
                 inner_run,
@@ -485,7 +493,7 @@ def chat_stream(
                 "done",
                 {
                     "message": MessageResponse.model_validate(assistant_message).model_dump(mode="json"),
-                    "run_id": run.id,
+                    "run_id": run_id,
                 },
             )
 
@@ -546,7 +554,7 @@ def chat_stream(
                 最后把整次 Run 标记 failed。
                 这样以后查这次执行详情时，一眼就知道这次执行失败了。
                 """
-                inner_run = inner_db.query(Runs).filter(Runs.id == run.id).first()
+                inner_run = inner_db.query(Runs).filter(Runs.id == run_id).first()
                 if inner_run:
                     fail_run(
                         inner_db,

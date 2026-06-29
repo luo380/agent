@@ -35,4 +35,4 @@ class AgentResponse(BaseModel):
     @field_validator('welcome_message', mode='before')
     @classmethod
     def normalize_welcome_message(cls, value):
-        return '' if value is None else value
+         return '' if value is None else value
