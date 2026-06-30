@@ -24,6 +24,15 @@ DOCUMENT_STATUS_READY = "ready"
 DOCUMENT_STATUS_FAILED = "failed"
 
 
+RAG_RUN_STATUS_RUNNING = "running"
+RAG_RUN_STATUS_COMPLETED = "completed"
+RAG_RUN_STATUS_FAILED = "failed"
+
+RAG_STEP_STATUS_RUNNING = "running"
+RAG_STEP_STATUS_COMPLETED = "completed"
+RAG_STEP_STATUS_FAILED = "failed"
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -147,3 +156,74 @@ class KnowledgeChunks(Base):
     source_section: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     embedding_json: Mapped[str] = mapped_column(LongText, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
+
+
+class RagRuns(Base):
+    __tablename__ = "rag_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # 谁发起的这次 RAG 提问
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    # 原始问题
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # 最终回答
+    answer: Mapped[str] = mapped_column(LongText, default="", nullable=False)
+
+    # 整体状态：running / completed / failed
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # 可选：这次只搜哪些文档
+    document_scope_json: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    # strict_mode=True 表示只允许根据知识库回答
+    strict_mode: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    # top_k 检索条数，方便后面排查效果
+    top_k: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+
+    # 整次失败原因
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now, nullable=False)
+
+
+class RagRunSteps(Base):
+    __tablename__ = "rag_run_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # 属于哪次 rag run
+    rag_run_id: Mapped[int] = mapped_column(
+        ForeignKey("rag_runs.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # 比如 embed_query / vector_search / rerank_chunks
+    step_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # 给前端或日志看的展示名
+    step_name: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    # 输入输出都存 JSON 字符串，方便调试
+    input_payload: Mapped[str] = mapped_column(LongText, default="", nullable=False)
+    output_payload: Mapped[str] = mapped_column(LongText, default="", nullable=False)
+
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now, nullable=False)

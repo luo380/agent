@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import auth, health, agents, session, runs, knowledge
+from api.routes import auth, health, agents, session, runs, knowledge, rag
 from core.db.session import init_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -50,6 +50,8 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(session.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
+
+app.include_router(rag.router, prefix="/api/rag", tags=["rag"])
 
 
 if FRONTEND_DIST_DIR.exists():

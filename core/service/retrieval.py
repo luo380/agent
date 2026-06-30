@@ -167,3 +167,116 @@ def load_user_chunks(
         )
 
     return chunks
+
+
+# 用户查询 → 生成 query_embedding
+#                 ↓
+#         load_user_chunks() → 获取所有候选 chunks
+#                 ↓
+#         ┌── 遍历每个 chunk ──┐
+#         │   解析 embedding    │
+#         │   计算 cosine 相似度 │
+#         │   相似度 > 0? → 保留│
+#         └────────────────────┘
+#                 ↓
+#         按 vector_score 降序排序
+#                 ↓
+#         取前 top_k 条 → 返回结果
+def search_similar_chunks_by_embedding(
+    db: Session,
+    *,
+    user_id: int,
+    # 查询向量（将用户问题转成的数字列表）
+    query_embedding: list[float],
+    # 可选：限定搜索哪些文档
+    document_ids: Sequence[int] | None = None,
+    # 最多返回几条结果
+    top_k: int = 10,
+    # 相似度阈值（低于此值的结果被过滤）
+    threshold: float = 0.5,
+        # 是否对结果重新排序（提高精度）
+    rerank: bool = True,
+) -> list[RetrievedChunk]:
+    # 先粗检索：向量相似度
+    candidates = load_user_chunks(db, user_id=user_id, document_ids=document_ids)
+
+    scored: list[RetrievedChunk] = []
+    for chunk in candidates:
+        chunk_embedding = parse_embedding(chunk.embedding_json)
+        if not chunk_embedding:
+            continue
+
+        vector_score = cosine_similarity(query_embedding, chunk_embedding)
+        if vector_score <= 0:
+            continue
+        # 添加粗匹配结果
+        scored.append(
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                vector_score=vector_score,
+            )
+        )
+
+    scored.sort(key=lambda item: (item.vector_score, item.chunk_index), reverse=True)
+    return scored[:top_k]
+
+# 用户查询 "如何用Python处理PDF"
+#         │
+#         ├─→ 生成 query_embedding（向量）
+#         │
+#         ├─→ search_similar_chunks_by_embedding()  ← 第172-227行
+#         │       └─ 向量相似度粗检索 → 10条结果
+#         │
+#         └─→ rerank_chunks(query_text, chunks, top_k=5)  ← 第230-261行
+#                 ├─ 计算每条的 keyword_score
+#                 ├─ 加权计算 final_score = 0.8v + 0.2k
+#                 ├─ 按 final_score 降序排序
+#                 └─ 返回 Top 5 → 给 LLM 做 RAG
+def rerank_chunks(
+    query_text: str,
+    chunks: Sequence[RetrievedChunk],
+    top_k: int = 5,
+) -> list[RetrievedChunk]:
+    # 再精排：向量分 + 关键词重合度
+    reranked: list[RetrievedChunk] = []
+
+    for chunk in chunks:
+        keyword_score = keyword_overlap_score(query_text, chunk.content)
+        # 加权融合得分
+        # 这是核心公式：
+        # - 向量得分权重
+        # 0.8（语义相似度占主导）
+        # - 关键词得分权重
+        # 0.2（字面匹配做补充）
+        # - round(..., 6): 保留6位小数避免浮点数精度问题
+        # final_score = 0.8 × vector_score + 0.2 × keyword_score
+        # 语义相似度（80 %）        关键词重合（20 %）
+        final_score = round((chunk.vector_score * 0.8) + (keyword_score * 0.2), 6)
+
+        reranked.append(
+        RetrievedChunk(
+            document_id=chunk.document_id,
+            document_name=chunk.document_name,
+            chunk_id=chunk.chunk_id,
+            chunk_index=chunk.chunk_index,
+            content=chunk.content,
+            source_page=chunk.source_page,
+            source_section=chunk.source_section,
+            embedding_json=chunk.embedding_json,
+            vector_score=chunk.vector_score,
+            keyword_score=keyword_score,
+            final_score=final_score,
+             )
+            )
+    reranked.sort(
+        key=lambda item: (item.final_score, item.vector_score, item.chunk_index),
+        reverse=True,
+    )
+    return reranked[:top_k]
