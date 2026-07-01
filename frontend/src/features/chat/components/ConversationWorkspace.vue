@@ -24,10 +24,10 @@
             <a-card :bordered="false" class="empty-card session-welcome-card">
               <div class="welcome-mark">{{ activeAgentShort }}</div>
               <a-typography-title :level="2" class="welcome-title">
-                从 {{ activeAgentName }} 开始一段新会话
+                与 {{ activeAgentName }} 开始一段新会话
               </a-typography-title>
               <a-typography-paragraph class="empty-copy">
-                一个输入框即可切换普通聊天和知识库问答。你可以先新建会话，再决定是否启用知识库模式。
+                通过同一个输入框切换普通聊天和知识库问答。你可以先新建会话，再决定是否启用知识库模式。
               </a-typography-paragraph>
               <div class="quick-prompt-list">
                 <button
@@ -101,7 +101,7 @@
 
                 <div v-if="message.retrieved_chunks?.length" class="rag-section-card">
                   <div class="rag-section-head">
-                    <div class="rag-section-title">Retrieved Chunks</div>
+                    <div class="rag-section-title">检索结果</div>
                     <a-tag>{{ message.retrieved_chunks.length }} 条</a-tag>
                   </div>
                   <div class="retrieved-chunk-list">
@@ -132,7 +132,7 @@
                 当前会话还没有消息
               </a-typography-title>
               <a-typography-paragraph class="empty-copy">
-                你可以直接输入问题，或者点一个快捷提示，把当前智能体拉进实际工作语境里。
+                你可以直接输入问题，或者点一个快捷提示，把当前智能体带进实际工作语境里。
               </a-typography-paragraph>
               <div class="quick-prompt-list">
                 <button
@@ -187,12 +187,22 @@
                 :disabled="!agents.length || (conversationMode === 'rag' && !readyKnowledgeCount)"
                 @click="$emit('send-message')"
               >
-                {{ conversationMode === 'rag' ? '发送消息' : '发送消息' }}
+                发送消息
               </a-button>
             </div>
 
             <div v-if="conversationMode === 'rag'" class="rag-controls-panel">
-              <div class="rag-control-grid">
+              <div class="rag-controls-head">
+                <div>
+                  <div class="rag-control-title">知识库配置</div>
+                  <div class="rag-controls-copy">点击右侧按钮可收起或展开文档范围、strict_mode 和 top_k。</div>
+                </div>
+                <a-button size="small" @click="ragConfigCollapsed = !ragConfigCollapsed">
+                  {{ ragConfigCollapsed ? '展开配置' : '收起配置' }}
+                </a-button>
+              </div>
+
+              <div v-if="!ragConfigCollapsed" class="rag-control-grid">
                 <div class="rag-control-card">
                   <div class="rag-control-title">文档范围</div>
                   <a-radio-group
@@ -228,7 +238,7 @@
                     @update:checked="$emit('update:rag-strict-mode', $event)"
                   />
                   <div class="rag-control-copy">
-                    严格模式下，无相关知识时不会自由发挥。
+                    开启时只按知识库回答；关闭后会优先参考知识库，查不到时也可继续推断。
                   </div>
                 </div>
 
@@ -247,6 +257,10 @@
                   </div>
                 </div>
               </div>
+
+              <div v-else class="rag-controls-collapsed">
+                已隐藏知识库配置。点击“展开配置”继续设置文档范围、strict_mode 和 top_k。
+              </div>
             </div>
           </a-card>
         </footer>
@@ -264,7 +278,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import RunTracePanel from '../../workspace/trace/RunTracePanel.vue';
 
 const props = defineProps({
@@ -312,6 +326,7 @@ const emit = defineEmits([
 ]);
 
 const composerRef = ref(null);
+const ragConfigCollapsed = ref(false);
 
 const composerModel = computed({
   get: () => props.draftMessage,
@@ -324,6 +339,12 @@ function handleComposerKeydown(event) {
     emit('send-message');
   }
 }
+
+watch(() => props.conversationMode, (mode) => {
+  if (mode === 'rag') {
+    ragConfigCollapsed.value = false;
+  }
+});
 
 function formatScore(value) {
   const number = Number(value);

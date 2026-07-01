@@ -660,6 +660,27 @@ button, input, textarea, select { font: inherit; }
   gap: 12px;
   margin-bottom: 12px;
 }
+.rag-controls-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.rag-controls-copy {
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.rag-controls-collapsed {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(22, 119, 255, 0.05);
+  color: var(--text-soft);
+  border: 1px dashed rgba(22, 119, 255, 0.18);
+  font-size: 13px;
+  line-height: 1.7;
+}
 .small-card {
   align-content: start;
 }
