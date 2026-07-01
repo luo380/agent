@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from pathlib import Path
@@ -11,6 +12,7 @@ from core.db.models import User, KnowledgeDocuments, DOCUMENT_STATUS_UPLOADED, D
     DOCUMENT_STATUS_CHUNKING, DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED, KnowledgeChunks
 from core.service.chunking import chunk_text
 from core.service.document_parser import parse_document
+from core.service.embedding import embed_texts
 
 router = APIRouter()
 
@@ -92,25 +94,42 @@ async def upload_file( file: UploadFile  = File(...),
         document.status = DOCUMENT_STATUS_CHUNKING
         db.commit()
         chunks = chunk_text(
-        full_text,
-        chunk_size=settings.RAG_CHUNK_SIZE,
-        overlap=settings.RAG_CHUNK_OVERLAP,
-             )
+            full_text,
+            chunk_size=settings.RAG_CHUNK_SIZE,
+            overlap=settings.RAG_CHUNK_OVERLAP,
+        )
+        # 把所有 chunk 的文本批量调用 embedding 模型，生成对应的向量（embedding）
+        # 列表推导式 [item["content"] for item in chunks] 取出每个 chunk 的纯文本组成一个字符串列表
+        # await 用于等待一个 异步函数（async def 定义的函数）执行完成
+        embeddings = await embed_texts([item["content"] for item in chunks])
+        # 安全检查：chunk 的数量必须与返回的 embedding 数量一一对应，
+        # 否则说明 embedding 服务出错或丢包，直接抛出异常走回滚逻辑
+        if len(embeddings) != len(chunks):
+            raise RuntimeError("Embedding result count does not match chunk count")
 
-        for item in chunks:
-             db.add(
+        # 按位置一一对应遍历每一对 (chunk, embedding)，逐条写入知识库 chunk 表
+        # zip 会按最短序列长度停止，配合上面的长度检查可以保证不会有遗漏或错位
+        # zip() 将两个或多个可迭代对象"压缩"在一起，按位置配对：
+        """chunks = [A, B, C]      # 索引0, 1, 2
+            embeddings = [X, Y, Z]  # 索引0, 1, 2
+            zip(chunks, embeddings) 
+            # 生成: [(A, X), (B, Y), (C, Z)]"""
+        for item, embedding in zip(chunks, embeddings):
+            db.add(
                 KnowledgeChunks(
-                document_id=document.id,
-                user_id=user.id,
-                chunk_index=item["chunk_index"],
-                content=item["content"],
-                start_offset=item["start_offset"],
-                end_offset=item["end_offset"],
-                source_page=item["source_page"],
-                source_section=item["source_section"],
+                    document_id=document.id,                  # 外键：关联所属文档
+                    user_id=user.id,                          # 用户 ID，做多租户数据隔离
+                    chunk_index=item["chunk_index"],          # 该 chunk 在文档中的序号（0, 1, 2...）
+                    content=item["content"],                  # chunk 的原始文本，后续用于检索后展示给用户
+                    start_offset=item["start_offset"],        # 在 full_text 中的起始字符位置（用于在原文中定位
+                    end_offset=item["end_offset"],            # 在 full_text 中的结束字符位置
+                    source_page=item["source_page"],          # 来源页码（解析器如果支持结构化解析会提供
+                    source_section=item["source_section"],    # 来源章节名（同上
+                    # embedding 是一个浮点数列表，序列化为 JSON 字符串存进数据库 TEXT 字段；
+                    # ensure_ascii=False 保留中文原文不被转义成 \uXXXX，减小存储体积并方便查看
+                    embedding_json=json.dumps(embedding, ensure_ascii=False),
                 )
-         )
-
+            )
         document.chunk_count = len(chunks)
         document.status = DOCUMENT_STATUS_READY
         db.commit()

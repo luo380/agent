@@ -40,6 +40,7 @@ async def embed_texts(
 
     client = client or get_llm_client()
 
+    # 调用Embedding API  获取向量数组
     response = await client.embeddings.create(
         model=get_embedding_model(),
         input=cleaned_texts,
