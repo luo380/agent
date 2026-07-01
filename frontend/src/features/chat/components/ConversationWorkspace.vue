@@ -166,7 +166,7 @@
                   type="button"
                   class="composer-tag mode-chip"
                   :class="{ 'is-active': conversationMode === 'chat' }"
-                  @click="$emit('update:conversation-mode', 'chat')"
+                  @click="handleConversationModeChange('chat')"
                 >
                   普通聊天
                 </button>
@@ -174,7 +174,7 @@
                   type="button"
                   class="composer-tag mode-chip"
                   :class="{ 'is-active': conversationMode === 'rag' }"
-                  @click="$emit('update:conversation-mode', 'rag')"
+                  @click="handleConversationModeChange('rag')"
                 >
                   知识库
                 </button>
@@ -191,18 +191,8 @@
               </a-button>
             </div>
 
-            <div v-if="conversationMode === 'rag'" class="rag-controls-panel">
-              <div class="rag-controls-head">
-                <div>
-                  <div class="rag-control-title">知识库配置</div>
-                  <div class="rag-controls-copy">点击右侧按钮可收起或展开文档范围、strict_mode 和 top_k。</div>
-                </div>
-                <a-button size="small" @click="ragConfigCollapsed = !ragConfigCollapsed">
-                  {{ ragConfigCollapsed ? '展开配置' : '收起配置' }}
-                </a-button>
-              </div>
-
-              <div v-if="!ragConfigCollapsed" class="rag-control-grid">
+            <div v-if="conversationMode === 'rag' && !ragConfigCollapsed" class="rag-controls-panel">
+              <div class="rag-control-grid">
                 <div class="rag-control-card">
                   <div class="rag-control-title">文档范围</div>
                   <a-radio-group
@@ -258,9 +248,6 @@
                 </div>
               </div>
 
-              <div v-else class="rag-controls-collapsed">
-                已隐藏知识库配置。点击“展开配置”继续设置文档范围、strict_mode 和 top_k。
-              </div>
             </div>
           </a-card>
         </footer>
@@ -340,9 +327,25 @@ function handleComposerKeydown(event) {
   }
 }
 
+function handleConversationModeChange(nextMode) {
+  if (nextMode === 'chat') {
+    ragConfigCollapsed.value = true;
+    emit('update:conversation-mode', 'chat');
+    return;
+  }
+
+  if (props.conversationMode === 'rag') {
+    ragConfigCollapsed.value = !ragConfigCollapsed.value;
+    return;
+  }
+
+  ragConfigCollapsed.value = false;
+  emit('update:conversation-mode', 'rag');
+}
+
 watch(() => props.conversationMode, (mode) => {
-  if (mode === 'rag') {
-    ragConfigCollapsed.value = false;
+  if (mode !== 'rag') {
+    ragConfigCollapsed.value = true;
   }
 });
 

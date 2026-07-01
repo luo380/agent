@@ -1,4 +1,4 @@
-﻿export function useChatSession(options) {
+export function useChatSession(options) {
   const {
     apiPrefix,
     defaultSessionTitle,
@@ -24,6 +24,7 @@
     parseApiResponse,
     appendSessionOverlayMessage = () => {},
     replaceSessionOverlayMessage = () => {},
+    clearSessionOverlayMessages = () => {},
   } = options;
 
   function appendMessage(message) {
@@ -126,6 +127,7 @@
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        session_id: targetSessionId,
         question: content,
         top_k: Number(ragTopK.value) || 5,
         strict_mode: Boolean(ragStrictMode.value),
@@ -165,6 +167,9 @@
       tracePanelVisible.value = true;
       await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'rag' });
     }
+
+    await loadMessages(targetSessionId);
+    clearSessionOverlayMessages(targetSessionId);
   }
 
   async function sendMessage() {

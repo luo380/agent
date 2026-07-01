@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div v-if="sessionChecking" class="screen-state">
     <a-spin size="large" />
     <a-typography-paragraph class="screen-copy">正在恢复登录状态...</a-typography-paragraph>
@@ -453,6 +453,7 @@ const { sendMessage } = useChatSession({
   parseApiResponse,
   appendSessionOverlayMessage,
   replaceSessionOverlayMessage,
+  clearSessionOverlayMessages,
 });
 
 function setConversationModeWithTraceGuard(mode) {
