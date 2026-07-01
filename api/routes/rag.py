@@ -1,11 +1,11 @@
-﻿import datasets
+import datasets
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
 from api.schemas.rag import RagCitationResponse, RagRetrievedChunkResponse, RagAskResponse, RagAskRequest
-from api.schemas.rag_run import RagRunDetailResponse, RagRunResponse
-from core.db.models import RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User
+from api.schemas.rag_run import RagRunDetailResponse, RagRunResponse, RagRunStepResponse
+from core.db.models import ChatSession, Message, RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User, now
 from core.service.embedding import embed_text
 from core.service.llm import get_default_temperature, get_default_model, get_llm_client
 from core.service.rag import build_citations, build_rag_messages, build_context
@@ -48,6 +48,24 @@ async def ask_knowledge(
     if not question:
         # HTTP 400: 客户端参数错误
         raise HTTPException(status_code=400, detail="Question is empty")
+
+    session = (
+        db.query(ChatSession)
+        .filter(ChatSession.id == payload.session_id, ChatSession.user_id == user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_message = Message(
+        session_id=session.id,
+        role="user",
+        content=question,
+    )
+    db.add(user_message)
+    session.updated_at = now()
+    db.commit()
+    db.refresh(user_message)
 
     # -------------------------------------------------------------------------
     # 2. 创建 RAG 运行记录（rag_run）—— 可观测性设计
@@ -280,6 +298,16 @@ async def ask_knowledge(
         # =====================================================================
         # 4. 收尾：标记整次 RAG 运行为成功状态
         # =====================================================================
+        assistant_message = Message(
+            session_id=session.id,
+            role="assistant",
+            content=answer_text,
+        )
+        db.add(assistant_message)
+        session.updated_at = now()
+        db.commit()
+        db.refresh(assistant_message)
+
         complete_rag_run(db, rag_run, answer=answer_text)
 
         # =====================================================================
@@ -342,13 +370,6 @@ async def ask_knowledge(
 # 6	Citations 格式化	整理引用来源（答案出处）	build_citations()
 
 
-class RagSteps:
-    pass
-
-
-class RagStepResponse:
-    pass
-
 
 @router.get("/run/{run_id}")
 def get_rag_run_detail(
@@ -366,19 +387,20 @@ def get_rag_run_detail(
         raise HTTPException(status_code=404, detail="RAG run not found")
 
     steps = (
-        db.query(RagSteps)
-        .filter(RagSteps.run_id == run_id)
-        .order_by(RagSteps.started_at.asc(), RagSteps.id.asc())
+        db.query(RagRunSteps)
+        .filter(RagRunSteps.run_id == run_id)
+        .order_by(RagRunSteps.started_at.asc(), RagRunSteps.id.asc())
         .all())
 
     if not steps:
         raise HTTPException(status_code=404, detail="No steps found")
 
-    data= RagRunDetailResponse(
+    data = RagRunDetailResponse(
         **RagRunResponse.model_validate(rag_run).model_dump(),
-        steps=[RagStepResponse.model_validate(step) for step in steps],
+        steps=[RagRunStepResponse.model_validate(step) for step in steps],
     )
     return {"data": data}
+
 
 
 
