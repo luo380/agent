@@ -203,7 +203,7 @@ export function useWorkspaceData(options) {
 
     try {
       await apiJson('/agents/agent/' + agentId, {
-        method: 'POST',
+        method: 'DELETE',
       });
 
       agents.value = agents.value.filter((item) => item.id !== agentId);
