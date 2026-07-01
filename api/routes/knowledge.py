@@ -1,7 +1,7 @@
 import os
 import uuid
-
-from fastapi import APIRouter, Path, File, Depends, UploadFile, HTTPException
+from pathlib import Path
+from fastapi import APIRouter, File, Depends, UploadFile, HTTPException
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user

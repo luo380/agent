@@ -1,8 +1,10 @@
+import datasets
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
 from api.schemas.rag import RagCitationResponse, RagRetrievedChunkResponse, RagAskResponse, RagAskRequest
+from api.schemas.rag_run import RagRunDetailResponse, RagRunResponse
 from core.db.models import RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User
 from core.service.embedding import embed_text
 from core.service.llm import get_default_temperature, get_default_model, get_llm_client
@@ -11,7 +13,7 @@ from core.service.rag_trace import fail_rag_step, fail_rag_run, complete_rag_run
     create_rag_run
 from core.service.retrieval import rerank_chunks, search_similar_chunks_by_embedding
 
-router = APIRouter
+router = APIRouter()
 
 def fail_open_rag_step(db: Session, step_id: int | None, error_message: str) -> None:
     # 如果某一步还处于 running，就补记为 failed
@@ -21,14 +23,6 @@ def fail_open_rag_step(db: Session, step_id: int | None, error_message: str) -> 
     step = db.query(RagRunSteps).filter(RagRunSteps.id == step_id).first()
     if step and step.status == RAG_STEP_STATUS_RUNNING:
         fail_rag_step(db, step, error_message=error_message)
-
-
-
-
-
-
-
-
 
 
 # -----------------------------------------------------------------------------
@@ -346,3 +340,45 @@ async def ask_knowledge(
 # 4	Build Context	将文本块拼接成 LLM 可读取的上下文	build_context()
 # 5	LLM 回答生成	将问题+上下文发给 LLM 生成 grounded answer	client.chat.completions.create()
 # 6	Citations 格式化	整理引用来源（答案出处）	build_citations()
+
+
+class RagSteps:
+    pass
+
+
+class RagStepResponse:
+    pass
+
+
+@router.get("/run/{run_id}")
+def get_rag_run_detail(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rag_run = (
+        db.query(RagRuns)
+        .filter(RagRuns.id == run_id, RagRuns.user_id == user.id)
+        .first()
+    )
+
+    if not rag_run:
+        raise HTTPException(status_code=404, detail="RAG run not found")
+
+    steps = (
+        db.query(RagSteps)
+        .filter(RagSteps.run_id == run_id)
+        .order_by(RagSteps.started_at.asc(), RagSteps.id.asc())
+        .all())
+
+    if not steps:
+        raise HTTPException(status_code=404, detail="No steps found")
+
+    data= RagRunDetailResponse(
+        **RagRunResponse.model_validate(rag_run).model_dump(),
+        steps=[RagStepResponse.model_validate(step) for step in steps],
+    )
+    return {"data": data}
+
+
+
