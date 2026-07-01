@@ -1,4 +1,4 @@
-export function summarizeAgentPrompt(prompt) {
+﻿export function summarizeAgentPrompt(prompt) {
   const text = String(prompt || '').trim();
   if (!text) return '暂未填写系统提示词。';
   return text.length > 68 ? text.slice(0, 68) + '...' : text;

@@ -1,4 +1,4 @@
-export const API_PREFIX = '/api';
+﻿export const API_PREFIX = '/api';
 export const STORAGE_TOKEN_KEY = 'agent_access_token';
 export const DEFAULT_SESSION_TITLE = '新对话';
 
@@ -24,8 +24,8 @@ export const toolItems = [
     label: '知识库',
     short: '知',
     overline: 'Knowledge',
-    status: '待接入',
-    description: '二级面板预留知识入口，后续可直接挂接检索与数据源。',
+    status: '已接通',
+    description: '上传当前用户自己的知识文档，并把它们直接带入同一个聊天输入框。',
   },
   {
     key: 'tools',
@@ -54,21 +54,21 @@ export const heroHighlights = [
     key: 'feedback',
     index: '03',
     title: '状态清晰可见',
-    copy: '加载中、接口报错、注册成功、流式回复中都在页面内明确反馈，便于联调和排查。',
+    copy: '加载中、接口报错、注册成功、流式回复中都会在页面内明确反馈，便于联调和排查。',
   },
 ];
 
 export const agentCapabilityTags = ['会话编排', '知识问答', '流程协同', '工具调用'];
 
 export const knowledgeCards = [
-  { title: '知识分组', copy: '后续可在这里按业务线、项目、角色拆分知识来源。' },
-  { title: '检索状态', copy: '二级区可以直接展示命中情况、索引更新时间和召回策略。' },
+  { title: '知识范围', copy: '当前默认只展示当前用户自己的文档，并支持在聊天前限定检索范围。' },
+  { title: '答案出处', copy: 'RAG 返回的 citations 与 retrieved chunks 会直接映射到主会话区。' },
 ];
 
 export const knowledgeTodo = [
-  '接入知识库列表与详情弹层',
-  '补充检索开关与引用来源状态',
-  '把知识命中结果映射到主会话区回复中',
+  '补充文档详情抽屉与分块预览',
+  '接入后端 RAG trace 查询接口',
+  '支持文档标签、项目维度和批量操作',
 ];
 
 export const toolCenterItems = [
@@ -94,7 +94,7 @@ export const agentPromptTemplates = [
     key: 'delivery-manager',
     title: '交付推进',
     description: '适合项目跟进、里程碑同步和风险提醒。',
-    content: '你是一名项目交付智能体，需要围绕目标、时间节点、风险和下一步动作组织回复。优先输出结论、阻塞点和建议动作，并保持表达简洁。',
+    content: '你是一名项目交付智能体，需要围绕目标、时间节点、风险和下一步动作组织回答。优先输出结论、阻塞点和建议动作，并保持表达简洁。',
   },
   {
     key: 'product-expert',

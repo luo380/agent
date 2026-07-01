@@ -1,11 +1,10 @@
-import { computed, reactive, ref, watch } from 'vue';
+﻿import { computed, reactive, ref, watch } from 'vue';
 
 export function useWorkspaceData(options) {
   const {
     apiJson,
     setWorkspaceNotice,
     getShortName,
-    formatTime,
     currentUser,
     baseAgentModelOptions,
     defaultSessionTitle,

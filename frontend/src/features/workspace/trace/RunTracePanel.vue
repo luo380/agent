@@ -1,9 +1,11 @@
-<template>
+﻿<template>
   <aside class="run-trace-panel">
     <div class="run-trace-head">
       <div>
         <div class="panel-overline">Execution Trace</div>
-        <a-typography-title :level="5" class="panel-title">执行轨迹</a-typography-title>
+        <a-typography-title :level="5" class="panel-title">
+          {{ traceKindLabel }}
+        </a-typography-title>
       </div>
 
       <a-button size="small" :loading="loading" @click="$emit('refresh')">
@@ -39,15 +41,23 @@
           <span class="trace-label">完成时间</span>
           <span>{{ formatTraceTime(trace.finished_at) }}</span>
         </div>
+        <div v-if="trace.trace_kind === 'rag'" class="trace-summary-row">
+          <span class="trace-label">文档范围</span>
+          <span>{{ formatDocumentScope(trace.document_scope) }}</span>
+        </div>
+        <div v-if="trace.trace_kind === 'rag'" class="trace-summary-row">
+          <span class="trace-label">检索参数</span>
+          <span class="trace-code">strict_mode: {{ trace.strict_mode ? 'on' : 'off' }}, top_k: {{ trace.top_k }}</span>
+        </div>
       </section>
 
       <section v-if="trace.input_text" class="trace-block">
-        <div class="trace-block-title">用户输入</div>
+        <div class="trace-block-title">{{ trace.trace_kind === 'rag' ? '问题' : '用户输入' }}</div>
         <div class="trace-copy">{{ trace.input_text }}</div>
       </section>
 
       <section v-if="trace.output_text" class="trace-block">
-        <div class="trace-block-title">模型输出</div>
+        <div class="trace-block-title">{{ trace.trace_kind === 'rag' ? '回答' : '模型输出' }}</div>
         <div class="trace-copy">{{ trace.output_text }}</div>
       </section>
 
@@ -86,19 +96,23 @@
     </div>
 
     <div v-else class="run-trace-loading">
-      <a-empty description="当前会话还没有执行轨迹" />
+      <a-empty description="当前还没有可展示的执行轨迹。" />
     </div>
   </aside>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   loading: { type: Boolean, default: false },
   trace: { type: Object, default: null },
   error: { type: String, default: '' },
 });
 
 defineEmits(['refresh']);
+
+const traceKindLabel = computed(() => (props.trace?.trace_kind === 'rag' ? '知识库执行轨迹' : '会话执行轨迹'));
 
 function formatTraceTime(value) {
   if (!value) return '--';
@@ -139,6 +153,23 @@ function formatPayload(payload) {
   if (!text) return '';
   try {
     return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function formatDocumentScope(scope) {
+  if (Array.isArray(scope)) {
+    if (!scope.length) return '全部可用文档';
+    return scope.map((item) => String(item)).join(', ');
+  }
+  const text = String(scope || '').trim();
+  if (!text) return '全部可用文档';
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.length) return parsed.map((item) => String(item)).join(', ');
+    if (Array.isArray(parsed) && !parsed.length) return '全部可用文档';
+    return text;
   } catch {
     return text;
   }

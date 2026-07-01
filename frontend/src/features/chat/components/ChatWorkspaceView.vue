@@ -24,7 +24,7 @@
         <a-button
           v-if="activeToolKey === 'chat'"
           class="trace-toggle-button"
-          :disabled="!activeSessionId && !runTraceCurrentId && !sendingMessage"
+          :disabled="!traceSupported || (!activeSessionId && !runTraceCurrentId && !sendingMessage)"
           @click="$emit('toggle-run-trace', activeSessionId)"
         >
           {{ tracePanelVisible ? '隐藏轨迹' : '执行轨迹' }}
@@ -63,10 +63,24 @@
       :run-trace-loading="runTraceLoading"
       :run-trace="runTrace"
       :run-trace-error="runTraceError"
+      :conversation-mode="conversationMode"
+      :rag-strict-mode="ragStrictMode"
+      :rag-top-k="ragTopK"
+      :rag-scope-type="ragScopeType"
+      :rag-document-ids="ragDocumentIds"
+      :knowledge-document-options="knowledgeDocumentOptions"
+      :active-scoped-documents="activeScopedDocuments"
+      :ready-knowledge-count="readyKnowledgeCount"
+      :trace-supported="traceSupported"
       @create-demo-agent="$emit('create-demo-agent')"
       @create-new-session="$emit('create-new-session')"
       @apply-prompt="$emit('apply-prompt', $event)"
       @update:draft-message="$emit('update:draftMessage', $event)"
+      @update:conversation-mode="$emit('update:conversation-mode', $event)"
+      @update:rag-strict-mode="$emit('update:rag-strict-mode', $event)"
+      @update:rag-top-k="$emit('update:rag-top-k', $event)"
+      @update:rag-scope-type="$emit('update:rag-scope-type', $event)"
+      @update:rag-document-ids="$emit('update:rag-document-ids', $event)"
       @send-message="$emit('send-message')"
       @retry-run-trace="$emit('retry-run-trace', activeSessionId)"
     />
@@ -93,18 +107,27 @@ const props = defineProps({
   runTraceCurrentId: { type: [Number, String], default: null },
   sendingMessage: { type: Boolean, default: false },
   activeAgentShort: { type: String, default: 'AI' },
-  activeAgentName: { type: String, default: '鏅鸿兘浣?' },
+  activeAgentName: { type: String, default: '智能体' },
   quickPrompts: { type: Array, default: () => [] },
   messagesLoading: { type: Boolean, default: false },
   messages: { type: Array, default: () => [] },
-  userInitials: { type: String, default: '鎴?' },
-  currentUserName: { type: String, default: '鎴?' },
+  userInitials: { type: String, default: '我' },
+  currentUserName: { type: String, default: '我' },
   formatTime: { type: Function, required: true },
   draftMessage: { type: String, default: '' },
   composerPlaceholder: { type: String, default: '' },
   runTraceLoading: { type: Boolean, default: false },
   runTrace: { type: Object, default: null },
   runTraceError: { type: String, default: '' },
+  conversationMode: { type: String, default: 'chat' },
+  ragStrictMode: { type: Boolean, default: true },
+  ragTopK: { type: Number, default: 5 },
+  ragScopeType: { type: String, default: 'all' },
+  ragDocumentIds: { type: Array, default: () => [] },
+  knowledgeDocumentOptions: { type: Array, default: () => [] },
+  activeScopedDocuments: { type: Array, default: () => [] },
+  readyKnowledgeCount: { type: Number, default: 0 },
+  traceSupported: { type: Boolean, default: true },
 });
 
 const emit = defineEmits([
@@ -115,6 +138,11 @@ const emit = defineEmits([
   'create-new-session',
   'apply-prompt',
   'update:draftMessage',
+  'update:conversation-mode',
+  'update:rag-strict-mode',
+  'update:rag-top-k',
+  'update:rag-scope-type',
+  'update:rag-document-ids',
   'send-message',
   'retry-run-trace',
 ]);

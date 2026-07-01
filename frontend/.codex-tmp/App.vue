@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div v-if="sessionChecking" class="screen-state">
     <a-spin size="large" />
     <a-typography-paragraph class="screen-copy">正在恢复登录状态...</a-typography-paragraph>
@@ -177,13 +177,8 @@ import { computed, onMounted, ref, watch } from 'vue';
 import AgentManagementView from './features/agent/components/AgentManagementView.vue';
 import AuthScreen from './features/auth/components/AuthScreen.vue';
 import ChatWorkspaceView from './features/chat/components/ChatWorkspaceView.vue';
-import { useChatSession } from './features/chat/composables/useChatSession';
-import { useKnowledgeBase } from './features/knowledge/composables/useKnowledgeBase';
 import CreateAgentModal from './features/agent/components/CreateAgentModal.vue';
 import WorkspaceSidebar from './features/workspace/sidebar/WorkspaceSidebar.vue';
-import { useAuthSession } from './features/auth/composables/useAuthSession';
-import { useRunTrace } from './features/workspace/composables/useRunTrace';
-import { useWorkspaceData } from './features/workspace/composables/useWorkspaceData';
 import {
   API_PREFIX,
   STORAGE_TOKEN_KEY,
@@ -198,6 +193,11 @@ import {
   toolItems,
 } from './shared/config/appContent';
 import { useApiClient } from './shared/services/useApiClient';
+import { useAuthSession } from './features/auth/composables/useAuthSession';
+import { useChatSession } from './features/chat/composables/useChatSession';
+import { useKnowledgeBase } from './features/knowledge/composables/useKnowledgeBase';
+import { useRunTrace } from './features/workspace/composables/useRunTrace';
+import { useWorkspaceData } from './features/workspace/composables/useWorkspaceData';
 import { formatTime, getShortName } from './shared/utils/uiHelpers';
 
 const simpleEmptyImage = Empty.PRESENTED_IMAGE_SIMPLE;
@@ -352,6 +352,7 @@ const {
   apiJson,
   setWorkspaceNotice,
   getShortName,
+  formatTime,
   currentUser,
   baseAgentModelOptions,
   defaultSessionTitle: DEFAULT_SESSION_TITLE,
@@ -407,17 +408,14 @@ const visibleMessages = computed(() => {
   const key = getSessionOverlayKey(activeSessionId.value);
   const overlayMessages = key ? (sessionOverlayMessages.value[key] || []) : [];
 
-  return [...serverMessages, ...overlayMessages]
-    .map((message, index) => ({ message, index }))
-    .sort((left, right) => {
-      const leftTime = Date.parse(left.message?.created_at || '');
-      const rightTime = Date.parse(right.message?.created_at || '');
-      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-        return leftTime - rightTime;
-      }
-      return left.index - right.index;
-    })
-    .map(({ message }) => message);
+  return [...serverMessages, ...overlayMessages].sort((left, right) => {
+    const leftTime = Date.parse(left?.created_at || '');
+    const rightTime = Date.parse(right?.created_at || '');
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
+  });
 });
 
 const displayComposerPlaceholder = computed(() => (
@@ -426,7 +424,7 @@ const displayComposerPlaceholder = computed(() => (
     : composerPlaceholder.value
 ));
 
-const traceSupported = computed(() => true);
+const traceSupported = computed(() => conversationMode.value === 'chat');
 
 const { sendMessage } = useChatSession({
   apiPrefix: API_PREFIX,
@@ -465,9 +463,14 @@ function setConversationModeWithTraceGuard(mode) {
 }
 
 async function handleToggleRunTrace(sessionId) {
-  await toggleRunTracePanel(sessionId, {
-    kind: conversationMode.value === 'rag' ? 'rag' : 'chat',
-  });
+  if (!traceSupported.value) {
+    tracePanelVisible.value = false;
+    stopRunTracePolling();
+    clearRunTraceState();
+    setWorkspaceNotice('当前后端还没有提供 RAG trace 查询接口，知识库问答暂不支持查看轨迹。', 'info');
+    return;
+  }
+  await toggleRunTracePanel(sessionId);
 }
 
 async function handleUploadKnowledgeDocument(file) {
@@ -524,5 +527,3 @@ onMounted(() => {
   restoreSession();
 });
 </script>
-
-

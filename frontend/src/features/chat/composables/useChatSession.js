@@ -1,4 +1,4 @@
-export function useChatSession(options) {
+﻿export function useChatSession(options) {
   const {
     apiPrefix,
     defaultSessionTitle,
@@ -8,6 +8,10 @@ export function useChatSession(options) {
     draftMessage,
     messages,
     sendingMessage,
+    conversationMode,
+    ragStrictMode,
+    ragTopK,
+    effectiveRagDocumentIds,
     createNewSession,
     loadMessages,
     loadSessions,
@@ -18,6 +22,8 @@ export function useChatSession(options) {
     runTraceCurrentId,
     tracePanelVisible,
     parseApiResponse,
+    appendSessionOverlayMessage = () => {},
+    replaceSessionOverlayMessage = () => {},
   } = options;
 
   function appendMessage(message) {
@@ -30,6 +36,14 @@ export function useChatSession(options) {
 
   function replaceMessage(messageId, nextMessage) {
     messages.value = messages.value.map((item) => item.id === messageId ? nextMessage : item);
+  }
+
+  function buildAssistantMessage(baseMessage, content, extra = {}) {
+    return {
+      ...baseMessage,
+      content,
+      ...extra,
+    };
   }
 
   async function consumeChatStream(response, assistantDraftId) {
@@ -63,7 +77,7 @@ export function useChatSession(options) {
       if (eventName === 'start') {
         if (payload.run_id) {
           tracePanelVisible.value = true;
-          await loadRunTraceById(payload.run_id, { allowMissing: true });
+          await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'chat' });
           startRunTracePolling(payload.run_id);
         }
         return;
@@ -77,15 +91,14 @@ export function useChatSession(options) {
         if (payload.message) replaceMessage(assistantDraftId, payload.message);
         stopRunTracePolling();
         if (payload.run_id || runTraceCurrentId.value) {
-          await loadRunTraceById(payload.run_id || runTraceCurrentId.value, { allowMissing: true });
+          await loadRunTraceById(payload.run_id || runTraceCurrentId.value, { allowMissing: true, kind: 'chat' });
         }
-        await loadSessions();
         return;
       }
       if (eventName === 'error') {
         stopRunTracePolling();
         if (payload.run_id || runTraceCurrentId.value) {
-          await loadRunTraceById(payload.run_id || runTraceCurrentId.value, { silent: true, allowMissing: true });
+          await loadRunTraceById(payload.run_id || runTraceCurrentId.value, { silent: true, allowMissing: true, kind: 'chat' });
         }
         throw new Error(payload.message || '流式会话返回错误');
       }
@@ -103,6 +116,57 @@ export function useChatSession(options) {
     if (buffer.trim()) await processBlock(buffer.trim());
   }
 
+  async function sendRagMessage(targetSessionId, assistantDraftId, now, content) {
+    stopRunTracePolling();
+
+    const response = await fetch(apiPrefix + '/rag/ask', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + currentToken.value,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        question: content,
+        top_k: Number(ragTopK.value) || 5,
+        strict_mode: Boolean(ragStrictMode.value),
+        document_ids: effectiveRagDocumentIds.value,
+      }),
+    });
+
+    const result = await parseApiResponse(response);
+    const payload = result?.data || {};
+
+    replaceSessionOverlayMessage(
+      targetSessionId,
+      assistantDraftId,
+      buildAssistantMessage(
+        {
+          id: payload.run_id ? 'rag-' + payload.run_id : assistantDraftId,
+          session_id: targetSessionId,
+          role: 'assistant',
+          created_at: now,
+        },
+        payload.answer || '',
+        {
+          mode: 'rag',
+          run_id: payload.run_id || null,
+          strict_mode: Boolean(payload.strict_mode),
+          citations: Array.isArray(payload.citations) ? payload.citations : [],
+          retrieved_chunks: Array.isArray(payload.retrieved_chunks) ? payload.retrieved_chunks : [],
+          meta: {
+            top_k: Number(ragTopK.value) || 5,
+            document_ids: effectiveRagDocumentIds.value.slice(),
+          },
+        },
+      ),
+    );
+
+    if (payload.run_id) {
+      tracePanelVisible.value = true;
+      await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'rag' });
+    }
+  }
+
   async function sendMessage() {
     const content = draftMessage.value.trim();
     if (!content) return;
@@ -110,8 +174,10 @@ export function useChatSession(options) {
       setWorkspaceNotice('当前没有可用智能体。', 'warning');
       return;
     }
+
+    const isRagMode = conversationMode.value === 'rag';
     sendingMessage.value = true;
-    setWorkspaceNotice('正在发送消息...', 'info');
+    setWorkspaceNotice(isRagMode ? '正在检索知识库并生成回答...' : '正在发送消息...', 'info');
 
     let targetSessionId = activeSessionId.value;
     if (!targetSessionId) {
@@ -130,6 +196,7 @@ export function useChatSession(options) {
       role: 'user',
       content,
       created_at: now,
+      mode: isRagMode ? 'rag' : 'chat',
     };
     const optimisticAssistantId = 'temp-assistant-' + Date.now();
     const optimisticAssistantMessage = {
@@ -138,31 +205,67 @@ export function useChatSession(options) {
       role: 'assistant',
       content: '',
       created_at: now,
+      mode: isRagMode ? 'rag' : 'chat',
+      citations: [],
+      retrieved_chunks: [],
     };
 
-    appendMessage(optimisticUserMessage);
-    appendMessage(optimisticAssistantMessage);
+    if (isRagMode) {
+      appendSessionOverlayMessage(targetSessionId, optimisticUserMessage);
+      appendSessionOverlayMessage(targetSessionId, optimisticAssistantMessage);
+    } else {
+      appendMessage(optimisticUserMessage);
+      appendMessage(optimisticAssistantMessage);
+    }
     draftMessage.value = '';
 
     try {
-      const response = await fetch(apiPrefix + '/sessions/session/' + targetSessionId + '/chat/stream', {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + currentToken.value,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ content }),
-      });
-      if (!response.ok) {
-        await parseApiResponse(response);
-        return;
+      if (isRagMode) {
+        await sendRagMessage(targetSessionId, optimisticAssistantId, now, content);
+      } else {
+        const response = await fetch(apiPrefix + '/sessions/session/' + targetSessionId + '/chat/stream', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + currentToken.value,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ content, mode: 'chat' }),
+        });
+        if (!response.ok) {
+          await parseApiResponse(response);
+          return;
+        }
+        await consumeChatStream(response, optimisticAssistantId);
+        await loadMessages(targetSessionId);
       }
-      await consumeChatStream(response, optimisticAssistantId);
-      await loadMessages(targetSessionId);
-      setWorkspaceNotice('消息发送成功。', 'success');
+
+      await loadSessions();
+      setWorkspaceNotice(isRagMode ? '知识库问答已完成。' : '消息发送成功。', 'success');
     } catch (error) {
       setWorkspaceNotice(error?.message || '发送消息失败', 'error');
-      await loadMessages(targetSessionId);
+      if (isRagMode) {
+        replaceSessionOverlayMessage(
+          targetSessionId,
+          optimisticAssistantId,
+          buildAssistantMessage(
+            {
+              id: optimisticAssistantId,
+              session_id: targetSessionId,
+              role: 'assistant',
+              created_at: now,
+            },
+            '知识库问答失败：' + (error?.message || '请稍后重试'),
+            {
+              mode: 'rag',
+              is_error: true,
+              citations: [],
+              retrieved_chunks: [],
+            },
+          ),
+        );
+      } else {
+        await loadMessages(targetSessionId);
+      }
     } finally {
       stopRunTracePolling();
       sendingMessage.value = false;

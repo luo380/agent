@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="sider-shell">
     <ToolRail
       :tool-items="toolItems"
@@ -44,8 +44,22 @@
 
       <template v-else-if="activeToolKey === 'knowledge'">
         <KnowledgeToolPanel
-          :knowledge-cards="knowledgeCards"
-          :knowledge-todo="knowledgeTodo"
+          :knowledge-documents="knowledgeDocuments"
+          :knowledge-documents-loading="knowledgeDocumentsLoading"
+          :uploading-document-names="uploadingDocumentNames"
+          :deleting-knowledge-document-id="deletingKnowledgeDocumentId"
+          :conversation-mode="conversationMode"
+          :rag-scope-type="ragScopeType"
+          :rag-document-ids="ragDocumentIds"
+          :active-scoped-documents="activeScopedDocuments"
+          :format-time="formatTime"
+          @refresh-knowledge="$emit('refresh-knowledge')"
+          @upload-knowledge-document="$emit('upload-knowledge-document', $event)"
+          @delete-knowledge-document="$emit('delete-knowledge-document', $event)"
+          @add-doc-to-scope="$emit('add-doc-to-scope', $event)"
+          @set-conversation-mode="$emit('set-conversation-mode', $event)"
+          @update:rag-scope-type="$emit('update:rag-scope-type', $event)"
+          @update:rag-document-ids="$emit('update:rag-document-ids', $event)"
         />
       </template>
 
@@ -86,8 +100,14 @@ defineProps({
   hasAgents: { type: Boolean, default: false },
   currentAgent: { type: Object, default: null },
   capabilityTags: { type: Array, default: () => [] },
-  knowledgeCards: { type: Array, default: () => [] },
-  knowledgeTodo: { type: Array, default: () => [] },
+  knowledgeDocuments: { type: Array, default: () => [] },
+  knowledgeDocumentsLoading: { type: Boolean, default: false },
+  uploadingDocumentNames: { type: Array, default: () => [] },
+  deletingKnowledgeDocumentId: { type: [String, Number, null], default: null },
+  conversationMode: { type: String, default: 'chat' },
+  ragScopeType: { type: String, default: 'all' },
+  ragDocumentIds: { type: Array, default: () => [] },
+  activeScopedDocuments: { type: Array, default: () => [] },
   toolCenterItems: { type: Array, default: () => [] },
 });
 
@@ -103,5 +123,12 @@ defineEmits([
   'create-demo-agent',
   'focus-composer',
   'show-integration-guide',
+  'refresh-knowledge',
+  'upload-knowledge-document',
+  'delete-knowledge-document',
+  'add-doc-to-scope',
+  'set-conversation-mode',
+  'update:rag-scope-type',
+  'update:rag-document-ids',
 ]);
 </script>
