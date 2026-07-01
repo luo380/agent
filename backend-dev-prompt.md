@@ -12,24 +12,8 @@
 - 涉及中文注释、中文 prompt、中文返回文案时，文件必须保持 UTF-8。
 - 不要用容易破坏中文和换行的批量替换方式。
 - 改完后必须验证文件里的真实字符是否正常，不能只看终端显示。
-
-3. 改 prompt 时要同步检查三处
-- system prompt
-- user prompt / 拼接模板
-- 无命中或兜底返回文案
-
-4. 改知识库问答逻辑时要明确模式语义
-- 普通聊天：完全自由回答
-- 知识库 + strict_mode on：只准按知识库回答
-- 知识库 + strict_mode off：优先参考知识库，查不到时可谨慎补充，并明确说明不是来自知识库
-
-5. 改完必须验证
-- Python 文件至少执行语法检查，例如 `python -m compileall`
-- 前端联动改动至少执行一次构建或等价检查
-- 如果是 prompt 或中文文案改动，额外检查最终文件内容是否为正常中文
-
-## 这次项目的特别提醒
-
-- `core/service/rag.py` 中的中文 prompt 是高风险区域，修改前后都要检查编码。
-- `api/routes/rag.py` 中的知识库兜底文案要和 prompt 语义一致。
+- 不再用这种容易污染编码的 PowerShell 文本替换方式改中文
+- 优先用更安全的补丁方式改文件
+- 改到中文时先确认文件实际编码，再落改
 - 不确定编码是否正常时，优先用脚本按 UTF-8 读取并验证，不要只依赖 PowerShell 直接输出。
+- Chinese text rule: all Chinese content must remain valid UTF-8 text, and must never be changed into mojibake or garbled replacement text.
