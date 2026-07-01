@@ -1,4 +1,4 @@
-import datasets
+﻿import datasets
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
@@ -243,7 +243,7 @@ async def ask_knowledge(
             answer_text = (completion.choices[0].message.content or "").strip()
         else:
             # 严格模式且无上下文：直接返回固定提示，避免模型自由发挥
-            answer_text = "I could not find relevant content in the knowledge base."
+            answer_text = "知识库中没有找到相关内容。请尝试调整提问方式，或缩小/更换文档范围后再试。"
 
         # LLM 调用成功：记录回答长度
         complete_rag_step(

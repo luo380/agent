@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+﻿from collections.abc import Sequence
 
 from openai import AsyncOpenAI
 
@@ -55,11 +55,11 @@ def build_context(chunks: Sequence[RetrievedChunk]) -> str:
         #     此时用 "-" 占位，而不是显示 "None"
         #   - source_section 可能是空字符串，同理用 "-" 占位
         header = (
-            f"[{index}] "                                              # 序号，用方括号括起来，如 [1]、[2]
-            f"document={chunk.document_name}; "                        # 文档名称
-            f"chunk={chunk.chunk_index}; "                             # 文本块在文档内的序号
-            f"page={chunk.source_page if chunk.source_page is not None else '-'}; "  # 页码
-            f"section={chunk.source_section or '-'}"                   # 章节
+            f"[{index}] "                                              # 搴忓彿锛岀敤鏂规嫭鍙锋嫭璧锋潵锛屽 [1]銆乕2]
+            f"document={chunk.document_name}; "                        # 鏂囨。鍚嶇О
+            f"chunk={chunk.chunk_index}; "                             # 鏂囨湰鍧楀湪鏂囨。鍐呯殑搴忓彿
+            f"page={chunk.source_page if chunk.source_page is not None else '-'}; "  # 椤电爜
+            f"section={chunk.source_section or '-'}"                   # 绔犺妭
         )
 
         # 依次添加到 blocks：标签头 → 内容 → 空行（分隔）
@@ -99,27 +99,40 @@ def build_citations(chunks: Sequence[RetrievedChunk]) -> list[dict]:
     return citations
 
 def build_rag_messages(question: str, context: str, strict_mode: bool) -> list[dict]:
+    # 注意：这里包含中文 prompt，文件必须保持 UTF-8 编码；修改时不要使用会破坏中文或换行的批量替换方式。
     # strict_mode=True 时，要求模型只根据上下文回答
     # 严格模式
     if strict_mode:
         system_prompt = (
-            "You are a knowledge-base assistant. "
-            "Answer only from the provided context. "
-            "If the context is insufficient, say you do not know."
+            "你是一个知识库问答助手。"
+            "必须优先依据提供的知识库上下文回答。"
+            "如果上下文不足以支持答案，就直接说明知识库中没有足够信息，不要编造。"
         )
     else:
         system_prompt = (
-            "You are a knowledge-base assistant. "
-            "Prefer the provided context and be explicit when you infer."
+            "你是一个知识库优先的问答助手。"
+            "请优先依据提供的知识库上下文回答。"
+            "如果知识库没有命中相关内容，可以基于常识做谨慎补充，但要明确说明这部分不是来自知识库。"
         )
 
+    has_context = bool((context or "").strip())
+    if has_context:
+        answer_instruction = (
+            "请先基于知识库给出简洁回答，并在确实引用到知识库内容时使用 [1]、[2] 这类来源编号。"
+        )
+        context_block = context
+    else:
+        answer_instruction = (
+            "当前没有检索到相关知识库内容。"
+            "不要使用 [1]、[2] 这类引用标记。"
+            "如果 strict_mode 已关闭，你可以给出谨慎的补充回答，但必须明确说明这部分不是来自知识库。"
+        )
+        context_block = "未检索到相关知识库内容。"
+
     user_prompt = (
-        # 第 1 部分：用户问题
-        f"Question:\n{question}\n\n"
-        # 第 2 部分：参考资料
-        f"Context:\n{context or 'No relevant knowledge chunks were found.'}\n\n"
-        # 第 3 部分：回答要求
-        "Answer concisely and cite the relevant source numbers like [1], [2]."
+        f"用户问题：\n{question}\n\n"
+        f"知识库上下文：\n{context_block}\n\n"
+                                                                                                                                                                                                                                                                                  f"回答要求：{answer_instruction}"
     )
 
     return [
