@@ -260,8 +260,15 @@ export function useChatSession(options) {
       content: '',
       created_at: now,
       mode: isRagMode ? 'rag' : 'chat',
+      strict_mode: isRagMode ? Boolean(ragStrictMode.value) : undefined,
       citations: [],
       retrieved_chunks: [],
+      meta: isRagMode
+        ? {
+            top_k: Number(ragTopK.value) || 5,
+            document_ids: effectiveRagDocumentIds.value.slice(),
+          }
+        : undefined,
     };
 
     if (isRagMode) {
