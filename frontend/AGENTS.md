@@ -20,7 +20,6 @@ This file applies to frontend work under `frontend/`.
 8. Do not turn `App.vue` into a catch-all file.
 9. Split features by module boundary: component, composable, service, or style module.
 10. Do not automatically restart frontend or backend services unless explicitly asked.
-11. Do not automatically run build or restart commands unless explicitly asked.
 
 ## Structure Rules
 
