@@ -102,6 +102,12 @@ def build_citations(chunks: Sequence[RetrievedChunk]) -> list[dict]:
 CITATION_MARK_RE = re.compile(r"\[(\d+)\]")
 
 
+def _chunk_value(chunk: RetrievedChunk | dict, key: str, default=None):
+    if isinstance(chunk, dict):
+        return chunk.get(key, default)
+    return getattr(chunk, key, default)
+
+
 def ensure_answer_has_citations(answer_text: str, chunks: Sequence[RetrievedChunk]) -> str:
     """
     给最终回答补一道“引用兜底”。
@@ -129,9 +135,12 @@ def ensure_answer_has_citations(answer_text: str, chunks: Sequence[RetrievedChun
 
     reference_lines: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
-        page_text = f"；第 {chunk.source_page} 页" if chunk.source_page is not None else ""
-        section_text = f"；章节/区域：{chunk.source_section}" if chunk.source_section else ""
-        reference_lines.append(f"[{index}] {chunk.document_name}{page_text}{section_text}")
+        document_name = _chunk_value(chunk, "document_name", "unknown document")
+        source_page = _chunk_value(chunk, "source_page")
+        source_section = _chunk_value(chunk, "source_section", "")
+        page_text = f"；第 {source_page} 页" if source_page is not None else ""
+        section_text = f"；章节/区域：{source_section}" if source_section else ""
+        reference_lines.append(f"[{index}] {document_name}{page_text}{section_text}")
 
     reference_block = "\n".join(reference_lines)
 
