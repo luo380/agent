@@ -8,7 +8,7 @@ from api.schemas.rag_run import RagRunDetailResponse, RagRunResponse, RagRunStep
 from core.db.models import ChatSession, Message, RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User, now, MESSAGE_MODE_RAG, MESSAGE_SOURCE_RAG_ASK
 from core.service.embedding import embed_text
 from core.service.llm import get_default_temperature, get_default_model, get_llm_client
-from core.service.rag import build_citations, build_rag_messages, build_context
+from core.service.rag import build_citations, build_rag_messages, build_context, ensure_answer_has_citations
 from core.service.rag_trace import fail_rag_step, fail_rag_run, complete_rag_run, create_rag_step, complete_rag_step, \
     create_rag_run
 from core.service.retrieval import rerank_chunks, search_similar_chunks_by_embedding
@@ -265,6 +265,9 @@ async def ask_knowledge(
             # 严格模式且无上下文：直接返回固定提示，避免模型自由发挥
             answer_text = "知识库中没有找到相关内容。请尝试调整提问方式，或缩小/更换文档范围后再试。"
 
+        # 给答案补一道“引用兜底”。
+        # 这样即使模型没有老老实实输出 [1][2]，最终返回给前端的 answer 里也会带来源。
+        answer_text = ensure_answer_has_citations(answer_text, reranked_hits)
         # LLM 调用成功：记录回答长度
         complete_rag_step(
             db,

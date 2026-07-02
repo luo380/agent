@@ -1,4 +1,5 @@
-﻿from collections.abc import Sequence
+﻿import re
+from collections.abc import Sequence
 
 from openai import AsyncOpenAI
 
@@ -97,7 +98,44 @@ def build_citations(chunks: Sequence[RetrievedChunk]) -> list[dict]:
             }
         )
     return citations
+# 用来检测答案里是否已经出现了 [1] / [2] 这种引用标记
+CITATION_MARK_RE = re.compile(r"\[(\d+)\]")
 
+
+def ensure_answer_has_citations(answer_text: str, chunks: Sequence[RetrievedChunk]) -> str:
+    """
+    给最终回答补一道“引用兜底”。
+
+    为什么需要这一步：
+    - 我们虽然在 prompt 里要求模型输出 [1][2] 引用
+    - 但大模型并不总是 100% 听话
+    - 所以这里再做一次后处理，保证“有命中的知识库内容时，最终答案里一定看得到来源”
+
+    处理规则：
+    1. 没有检索结果：原样返回
+    2. 已经带 [1] / [2]：原样返回，不重复追加
+    3. 没带引用：在答案后面自动补一个“参考来源”块
+    """
+    if not chunks:
+        return (answer_text or "").strip()
+
+    clean_answer = (answer_text or "").strip()
+    if not clean_answer:
+        clean_answer = "我根据知识库整理了相关信息。"
+
+    # 如果模型已经按要求写了 [1][2]，就不要重复追加
+    if CITATION_MARK_RE.search(clean_answer):
+        return clean_answer
+
+    reference_lines: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        page_text = f"；第 {chunk.source_page} 页" if chunk.source_page is not None else ""
+        section_text = f"；章节/区域：{chunk.source_section}" if chunk.source_section else ""
+        reference_lines.append(f"[{index}] {chunk.document_name}{page_text}{section_text}")
+
+    reference_block = "\n".join(reference_lines)
+
+    return f"{clean_answer}\n\n参考来源：\n{reference_block}"
 def build_rag_messages(question: str, context: str, strict_mode: bool) -> list[dict]:
     # 注意：这里包含中文 prompt，文件必须保持 UTF-8 编码；修改时不要使用会破坏中文或换行的批量替换方式。
     # strict_mode=True 时，要求模型只根据上下文回答
