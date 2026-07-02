@@ -133,7 +133,7 @@
           @apply-prompt="applyPrompt"
           @update:draft-message="draftMessage = $event"
           @update:conversation-mode="setConversationModeWithTraceGuard"
-          @update:rag-strict-mode="ragStrictMode = $event"
+          @update:rag-strict-mode="ragStrictMode = Boolean($event)"
           @update:rag-top-k="ragTopK = $event"
           @update:rag-scope-type="setRagScopeType"
           @update:rag-document-ids="setRagDocumentIds"

@@ -47,6 +47,64 @@ export function useChatSession(options) {
     };
   }
 
+  function buildRagAssistantExtra(payload) {
+    return {
+      mode: 'rag',
+      run_id: payload.run_id || null,
+      strict_mode: Boolean(payload.strict_mode),
+      citations: Array.isArray(payload.citations) ? payload.citations : [],
+      retrieved_chunks: Array.isArray(payload.retrieved_chunks) ? payload.retrieved_chunks : [],
+      meta: {
+        top_k: Number(ragTopK.value) || 5,
+        document_ids: effectiveRagDocumentIds.value.slice(),
+      },
+    };
+  }
+
+  function normalizeComparableText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function hydrateLatestRagAssistantMessage(payload, createdAt) {
+    const targetAnswer = normalizeComparableText(payload.answer);
+    const createdTime = Date.parse(createdAt || '');
+    let fallbackIndex = -1;
+
+    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+      const message = messages.value[index];
+      if (!message || message.role !== 'assistant') continue;
+      if (message.mode && message.mode !== 'rag') continue;
+
+      const messageTime = Date.parse(message.created_at || '');
+      const closeToCurrent = !Number.isFinite(createdTime)
+        || !Number.isFinite(messageTime)
+        || Math.abs(messageTime - createdTime) <= 120000;
+
+      if (!closeToCurrent) continue;
+      if (fallbackIndex === -1) fallbackIndex = index;
+
+      if (!targetAnswer) continue;
+      if (normalizeComparableText(message.content) === targetAnswer) {
+        fallbackIndex = index;
+        break;
+      }
+    }
+
+    if (fallbackIndex === -1) return false;
+
+    const nextMessages = messages.value.slice();
+    const targetMessage = nextMessages[fallbackIndex];
+    nextMessages[fallbackIndex] = buildAssistantMessage(
+      targetMessage,
+      payload.answer || targetMessage.content || '',
+      buildRagAssistantExtra(payload),
+    );
+    messages.value = nextMessages;
+    return true;
+  }
+
   async function consumeChatStream(response, assistantDraftId) {
     if (!response.body) {
       throw new Error('流式响应不可用');
@@ -149,17 +207,7 @@ export function useChatSession(options) {
           created_at: now,
         },
         payload.answer || '',
-        {
-          mode: 'rag',
-          run_id: payload.run_id || null,
-          strict_mode: Boolean(payload.strict_mode),
-          citations: Array.isArray(payload.citations) ? payload.citations : [],
-          retrieved_chunks: Array.isArray(payload.retrieved_chunks) ? payload.retrieved_chunks : [],
-          meta: {
-            top_k: Number(ragTopK.value) || 5,
-            document_ids: effectiveRagDocumentIds.value.slice(),
-          },
-        },
+        buildRagAssistantExtra(payload),
       ),
     );
 
@@ -169,6 +217,7 @@ export function useChatSession(options) {
     }
 
     await loadMessages(targetSessionId);
+    hydrateLatestRagAssistantMessage(payload, now);
     clearSessionOverlayMessages(targetSessionId);
   }
 

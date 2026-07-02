@@ -73,7 +73,7 @@
 
               <section v-if="message.role === 'assistant' && message.mode === 'rag'" class="rag-response-meta">
                 <div class="rag-answer-meta">
-                  <span class="rag-meta-pill">strict_mode: {{ message.strict_mode ? 'on' : 'off' }}</span>
+                  <span class="rag-meta-pill">本条回答：{{ formatStrictMode(message.strict_mode) }}</span>
                   <span v-if="message.meta?.top_k" class="rag-meta-pill">top_k: {{ message.meta.top_k }}</span>
                   <span v-if="message.run_id" class="rag-meta-pill">run_id: {{ message.run_id }}</span>
                 </div>
@@ -84,43 +84,71 @@
                     <a-tag color="processing">{{ message.citations.length }} 条</a-tag>
                   </div>
                   <div class="rag-citation-list">
-                    <article v-for="citation in message.citations" :key="citation.chunk_id" class="rag-citation-card">
+                    <article
+                      v-for="(citation, citationIndex) in message.citations"
+                      :key="getRecordKey(citation, 'citation', citationIndex)"
+                      class="rag-citation-card"
+                    >
                       <div class="rag-citation-title-row">
-                        <strong>{{ citation.document_name }}</strong>
+                        <strong>{{ getDisplayText(citation.document_name, '未命名文档') }}</strong>
                         <span class="rag-score">score {{ formatScore(citation.score) }}</span>
                       </div>
-                      <div class="rag-citation-meta">
-                        Chunk #{{ citation.chunk_index }}
-                        <span v-if="citation.source_page"> · 第 {{ citation.source_page }} 页</span>
-                        <span v-if="citation.source_section"> · {{ citation.source_section }}</span>
+                      <div class="rag-citation-fields">
+                        <div class="rag-citation-field">
+                          <span class="rag-field-label">document_name</span>
+                          <span>{{ getDisplayText(citation.document_name, '未命名文档') }}</span>
+                        </div>
+                        <div class="rag-citation-field">
+                          <span class="rag-field-label">source_page</span>
+                          <span>{{ formatSourcePage(citation.source_page) }}</span>
+                        </div>
+                        <div class="rag-citation-field">
+                          <span class="rag-field-label">source_section</span>
+                          <span>{{ getDisplayText(citation.source_section, '未标注章节') }}</span>
+                        </div>
                       </div>
-                      <div class="rag-citation-copy">{{ citation.content }}</div>
+                      <div class="rag-citation-meta">
+                        <span>{{ formatChunkLabel(citation.chunk_index) }}</span>
+                        <span v-if="citation.chunk_id != null"> · chunk_id {{ citation.chunk_id }}</span>
+                      </div>
+                      <div class="rag-citation-copy">
+                        <div class="rag-field-label">content</div>
+                        <div>{{ getDisplayText(citation.content, '暂无引用内容') }}</div>
+                      </div>
                     </article>
                   </div>
                 </div>
 
-                <div v-if="message.retrieved_chunks?.length" class="rag-section-card">
-                  <div class="rag-section-head">
-                    <div class="rag-section-title">检索结果</div>
-                    <a-tag>{{ message.retrieved_chunks.length }} 条</a-tag>
-                  </div>
-                  <div class="retrieved-chunk-list">
-                    <article v-for="chunk in message.retrieved_chunks" :key="chunk.chunk_id" class="retrieved-chunk-card">
-                      <div class="retrieved-chunk-head">
-                        <strong>{{ chunk.document_name }}</strong>
-                        <span class="rag-score">final {{ formatScore(chunk.final_score) }}</span>
-                      </div>
-                      <div class="retrieved-chunk-meta">
-                        Chunk #{{ chunk.chunk_index }}
-                        <span v-if="chunk.source_page"> · 第 {{ chunk.source_page }} 页</span>
-                        <span v-if="chunk.source_section"> · {{ chunk.source_section }}</span>
-                        <span> · vector {{ formatScore(chunk.vector_score) }}</span>
-                        <span> · keyword {{ formatScore(chunk.keyword_score) }}</span>
-                      </div>
-                      <div class="retrieved-chunk-copy">{{ chunk.content }}</div>
-                    </article>
-                  </div>
-                </div>
+                <a-collapse v-if="message.retrieved_chunks?.length" ghost class="rag-debug-collapse">
+                  <a-collapse-panel key="retrieved-chunks">
+                    <template #header>
+                      <div class="rag-section-title">检索到的片段 / 调试信息</div>
+                    </template>
+                    <template #extra>
+                      <a-tag>{{ message.retrieved_chunks.length }} 条</a-tag>
+                    </template>
+                    <div class="retrieved-chunk-list">
+                      <article
+                        v-for="(chunk, chunkIndex) in message.retrieved_chunks"
+                        :key="getRecordKey(chunk, 'chunk', chunkIndex)"
+                        class="retrieved-chunk-card"
+                      >
+                        <div class="retrieved-chunk-head">
+                          <strong>{{ getDisplayText(chunk.document_name, '未命名文档') }}</strong>
+                          <span class="rag-score">final {{ formatScore(chunk.final_score) }}</span>
+                        </div>
+                        <div class="retrieved-chunk-meta">
+                          <span>{{ formatChunkLabel(chunk.chunk_index) }}</span>
+                          <span> · 页码 {{ formatSourcePage(chunk.source_page) }}</span>
+                          <span> · 章节 {{ getDisplayText(chunk.source_section, '未标注章节') }}</span>
+                          <span> · vector {{ formatScore(chunk.vector_score) }}</span>
+                          <span> · keyword {{ formatScore(chunk.keyword_score) }}</span>
+                        </div>
+                        <div class="retrieved-chunk-copy">{{ getDisplayText(chunk.content, '暂无检索内容') }}</div>
+                      </article>
+                    </div>
+                  </a-collapse-panel>
+                </a-collapse>
               </section>
             </article>
           </div>
@@ -227,6 +255,7 @@
                     un-checked-children="宽松"
                     @update:checked="$emit('update:rag-strict-mode', $event)"
                   />
+                  <div class="rag-control-status">当前发送设置：{{ formatStrictMode(ragStrictMode) }}</div>
                   <div class="rag-control-copy">
                     开启时只按知识库回答；关闭后会优先参考知识库，查不到时也可继续推断。
                   </div>
@@ -353,6 +382,35 @@ function formatScore(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '--';
   return number.toFixed(3);
+}
+
+function formatStrictMode(value) {
+  return value ? '严格模式' : '宽松模式';
+}
+
+function getDisplayText(value, fallback = '--') {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (value == null) return fallback;
+  return String(value);
+}
+
+function formatSourcePage(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '未标注';
+  return '第 ' + number + ' 页';
+}
+
+function formatChunkLabel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'Chunk 未知';
+  return 'Chunk #' + number;
+}
+
+function getRecordKey(record, fallbackPrefix, index) {
+  return record?.chunk_id ?? record?.id ?? fallbackPrefix + '-' + index;
 }
 
 function focusComposer() {
