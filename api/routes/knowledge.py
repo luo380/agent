@@ -10,13 +10,14 @@ from api.schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentDe
 from core.config import settings
 from core.db.models import User, KnowledgeDocuments, DOCUMENT_STATUS_UPLOADED, DOCUMENT_STATUS_PARSING, \
     DOCUMENT_STATUS_CHUNKING, DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED, KnowledgeChunks
-from core.service.chunking import chunk_text
+from core.service.chunking import chunk_parsed_document
 from core.service.document_parser import parse_document
 from core.service.embedding import embed_texts
-
 router = APIRouter()
 
-ALLOWED_FILE_TYPES = {"txt", "pdf", "docx", "xlsx", "xls", "pptx", "ppt"}
+# 这里把“允许上传的类型”与“后端实际支持解析的类型”对齐。
+# 好处是接口行为更一致，避免前端能传、后端却解析失败的尴尬情况。
+ALLOWED_FILE_TYPES = {"txt", "md", "pdf", "docx", "xlsx", "xls", "pptx"}
 
 # 确保上传目录存在
 def ensure_upload_dir() -> Path:
@@ -83,25 +84,55 @@ async def upload_file( file: UploadFile  = File(...),
     db.refresh(document)
 
     try:
+        # 标记文档状态为"正在解析"，前端可根据此状态显示处理进度
         document.status = DOCUMENT_STATUS_PARSING
         db.commit()
-        # 简单说：第 85 行把文件"读出来"，第 86 行把"读出来的正文"拿出来，准备后续做文本切分（chunking）和向量化。
+
+        # ========== 第一步：解析文档 ==========
+        # parse_document 根据文件类型（pdf/docx/pptx/xlsx 等）选择不同的解析器，
+        # 返回结构化的解析结果，典型结构：
+        #   {
+        #       "full_text": "完整的纯文本内容",
+        #       "pages":    [{"page": 1, "text": "第1页内容"}, ...],  // PDF/PPTX 有值
+        #       "sections": [{"section": "章节名", "text": "章节内容"}, ...]  // DOCX/Markdown 有值
+        #   }
+        # 这样后面切块时就能知道每个 chunk 来自第几页/哪个章节
         parsed = parse_document(str(stored_path), file_type=file_type)
+
+        # 从解析结果中提取"纯文本全文"，用于：
+        #   1. 存入数据库 document.content_text 字段（方便全文预览或后续再处理）
+        #   2. 如果没有 pages/sections 结构时，退化为整篇文本切块
         full_text = parsed["full_text"]
 
+        # 将全文写入数据库，并清空错误信息（本次尝试是成功路径）
         document.content_text = full_text
         document.error_message = ""
+
+        # 标记文档状态为"正在切块"，然后提交数据库
         document.status = DOCUMENT_STATUS_CHUNKING
         db.commit()
-        chunks = chunk_text(
-            full_text,
-            chunk_size=settings.RAG_CHUNK_SIZE,
-            overlap=settings.RAG_CHUNK_OVERLAP,
+
+        # ========== 第二步：文本切块（Chunking）==========
+        # 这里不再直接对 full_text 做"盲切"，而是优先使用 parse_document 返回的
+        # 结构化信息（pages / sections）来切块。这样切出来的 chunk 会尽量保留：
+        #   - PDF / PPTX 的页码（source_page）
+        #   - DOCX 的章节名（source_section）
+        #   - Excel 的工作表名（source_section）
+        #
+        # 最终效果：后面的检索结果和引用信息会更像"来自第X页/来自XX章节"
+        #         而不是笼统的"来自某个文档"
+        chunks = chunk_parsed_document(
+            parsed,
+            chunk_size=settings.RAG_CHUNK_SIZE,  # 每个 chunk 的最大字符数（来自配置）
+            overlap=settings.RAG_CHUNK_OVERLAP,  # 相邻 chunk 的重叠字符数（来自配置）
         )
+
+        # ========== 第三步：生成向量（Embedding）==========
         # 把所有 chunk 的文本批量调用 embedding 模型，生成对应的向量（embedding）
         # 列表推导式 [item["content"] for item in chunks] 取出每个 chunk 的纯文本组成一个字符串列表
-        # await 用于等待一个 异步函数（async def 定义的函数）执行完成
+        # await 用于等待一个异步函数（async def 定义的函数）执行完成
         embeddings = await embed_texts([item["content"] for item in chunks])
+
         # 安全检查：chunk 的数量必须与返回的 embedding 数量一一对应，
         # 否则说明 embedding 服务出错或丢包，直接抛出异常走回滚逻辑
         if len(embeddings) != len(chunks):
