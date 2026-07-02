@@ -8,6 +8,10 @@ from core.db.base import Base
 
 LongText = Text().with_variant(LONGTEXT(), 'mysql')
 DEFAULT_SESSION_TITLE = '新对话'
+MESSAGE_MODE_CHAT = "chat"
+MESSAGE_MODE_RAG = "rag"
+MESSAGE_SOURCE_CHAT_STREAM = "chat_stream"
+MESSAGE_SOURCE_RAG_ASK = "rag_ask"
 RUN_STATUS_RUNNING = "running"
 RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_FAILED = "failed"
@@ -79,7 +83,10 @@ class Message(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey('sessions.id', ondelete='CASCADE'), index=True, nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), default=MESSAGE_MODE_CHAT, nullable=False)
+    source: Mapped[str] = mapped_column(String(50), default=MESSAGE_SOURCE_CHAT_STREAM, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
+
 
 class Runs(Base):
     __tablename__ = 'runs'
@@ -111,7 +118,6 @@ class RunSteps(Base):
     error_message: Mapped[str] = mapped_column(Text, default='', nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
 
 
 class KnowledgeDocuments(Base):

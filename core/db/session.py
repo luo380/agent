@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from core.config import settings
@@ -28,11 +28,37 @@ SessionLocal = sessionmaker(
 )
 
 
+def ensure_message_columns() -> None:
+    inspector = inspect(engine)
+    if "messages" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("messages")}
+    alter_statements: list[str] = []
+
+    if "mode" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE messages ADD COLUMN mode VARCHAR(20) NOT NULL DEFAULT 'chat'"
+        )
+    if "source" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE messages ADD COLUMN source VARCHAR(50) NOT NULL DEFAULT 'chat_stream'"
+        )
+
+    if not alter_statements:
+        return
+
+    with engine.begin() as conn:
+        for statement in alter_statements:
+            conn.execute(text(statement))
+
+
 def init_db() -> None:
     import core.db.models
+
     Base.metadata.create_all(bind=engine)
+    ensure_message_columns()
 
 
-    
 if __name__ == "__main__":
     init_db()

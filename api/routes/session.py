@@ -12,7 +12,7 @@ from api.schemas.session import (
     SessionCreateRequest,
     SessionResponse,
 )
-from core.db.models import Agent, ChatSession, Message, User, DEFAULT_SESSION_TITLE, now,Runs,RunSteps
+from core.db.models import Agent, ChatSession, Message, User, DEFAULT_SESSION_TITLE, now, Runs, RunSteps, MESSAGE_MODE_CHAT, MESSAGE_SOURCE_CHAT_STREAM
 from core.db.session import SessionLocal
 from core.service.llm import get_default_model, get_llm_client
 from core.service.run_trace import create_run, create_step, complete_step, complete_run, fail_step, fail_run
@@ -239,6 +239,8 @@ def chat_stream(
         session_id=session_id,
         role="user",
         content=content,
+        mode=MESSAGE_MODE_CHAT,
+        source=MESSAGE_SOURCE_CHAT_STREAM,
     )
     db.add(user_message)
     session.updated_at = now()
@@ -470,6 +472,8 @@ def chat_stream(
                 session_id=session_id,
                 role="assistant",
                 content=assistant_text,
+                mode=MESSAGE_MODE_CHAT,
+                source=MESSAGE_SOURCE_CHAT_STREAM,
             )
             inner_db.add(assistant_message)
 
@@ -562,6 +566,8 @@ def chat_stream(
                         session_id=session_id,
                         role="assistant",
                         content=partial_text,
+                        mode=MESSAGE_MODE_CHAT,
+                        source=MESSAGE_SOURCE_CHAT_STREAM,
                     )
                     inner_db.add(assistant_message)
                     inner_db.commit()

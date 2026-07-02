@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from api.deps import get_db, get_current_user
 from api.schemas.rag import RagCitationResponse, RagRetrievedChunkResponse, RagAskResponse, RagAskRequest
 from api.schemas.rag_run import RagRunDetailResponse, RagRunResponse, RagRunStepResponse
-from core.db.models import ChatSession, Message, RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User, now
+from core.db.models import ChatSession, Message, RagRunSteps, RAG_STEP_STATUS_RUNNING, RagRuns, User, now, MESSAGE_MODE_RAG, MESSAGE_SOURCE_RAG_ASK
 from core.service.embedding import embed_text
 from core.service.llm import get_default_temperature, get_default_model, get_llm_client
 from core.service.rag import build_citations, build_rag_messages, build_context
@@ -61,6 +61,8 @@ async def ask_knowledge(
         session_id=session.id,
         role="user",
         content=question,
+        mode=MESSAGE_MODE_RAG,
+        source=MESSAGE_SOURCE_RAG_ASK,
     )
     db.add(user_message)
     session.updated_at = now()
@@ -302,6 +304,8 @@ async def ask_knowledge(
             session_id=session.id,
             role="assistant",
             content=answer_text,
+            mode=MESSAGE_MODE_RAG,
+            source=MESSAGE_SOURCE_RAG_ASK,
         )
         db.add(assistant_message)
         session.updated_at = now()
@@ -388,7 +392,7 @@ def get_rag_run_detail(
 
     steps = (
         db.query(RagRunSteps)
-        .filter(RagRunSteps.run_id == run_id)
+        .filter(RagRunSteps.rag_run_id == run_id)
         .order_by(RagRunSteps.started_at.asc(), RagRunSteps.id.asc())
         .all())
 

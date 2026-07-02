@@ -34,4 +34,6 @@ class MessageResponse(BaseModel):
     session_id: int
     role: str
     content: str
+    mode: str
+    source: str
     created_at: datetime
