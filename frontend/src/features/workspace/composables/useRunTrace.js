@@ -1,5 +1,9 @@
 ﻿import { onUnmounted, ref } from 'vue';
 
+function isRagTraceKind(kind) {
+  return kind === 'rag' || kind === 'rag-langchain';
+}
+
 function parseJson(value, fallback = null) {
   if (value == null || value === '') return fallback;
   if (typeof value === 'object') return value;
@@ -44,17 +48,19 @@ export function useRunTrace(apiJson) {
   }
 
   function setRunTraceKind(kind) {
-    runTraceKind.value = kind === 'rag' ? 'rag' : 'chat';
+    runTraceKind.value = isRagTraceKind(kind) ? kind : 'chat';
   }
 
   function getRunTracePath(runId, kind = runTraceKind.value) {
-    return kind === 'rag' ? '/rag/run/' + runId : '/runs/run/' + runId;
+    if (kind === 'rag') return '/rag/run/' + runId;
+    if (kind === 'rag-langchain') return '/rag-langchain/run/' + runId;
+    return '/runs/run/' + runId;
   }
 
   function normalizeTraceData(data, kind = 'chat') {
     if (!data) return null;
 
-    if (kind === 'rag') {
+    if (isRagTraceKind(kind)) {
       return {
         ...data,
         trace_kind: 'rag',
@@ -85,7 +91,7 @@ export function useRunTrace(apiJson) {
   async function loadRunTraceById(runId, options = {}) {
     const silent = Boolean(options.silent);
     const allowMissing = Boolean(options.allowMissing);
-    const kind = options.kind === 'rag' ? 'rag' : runTraceKind.value;
+    const kind = isRagTraceKind(options.kind) ? options.kind : runTraceKind.value;
 
     if (!runId) {
       clearRunTraceState();
@@ -122,15 +128,15 @@ export function useRunTrace(apiJson) {
 
   async function loadLatestRunTraceForSession(sessionId, options = {}) {
     const silent = Boolean(options.silent);
-    const kind = options.kind === 'rag' ? 'rag' : runTraceKind.value;
+    const kind = isRagTraceKind(options.kind) ? options.kind : runTraceKind.value;
     if (!sessionId) {
       clearRunTraceState();
       return null;
     }
 
-    if (kind === 'rag') {
+    if (isRagTraceKind(kind)) {
       if (runTraceCurrentId.value) {
-        return await loadRunTraceById(runTraceCurrentId.value, { silent, allowMissing: true, kind: 'rag' });
+        return await loadRunTraceById(runTraceCurrentId.value, { silent, allowMissing: true, kind });
       }
       clearRunTraceState();
       return null;

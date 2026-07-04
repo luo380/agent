@@ -178,7 +178,7 @@ export function useChatSession(options) {
   async function sendRagMessage(targetSessionId, assistantDraftId, now, content) {
     stopRunTracePolling();
 
-    const response = await fetch(apiPrefix + '/rag/ask', {
+    const response = await fetch(apiPrefix + '/rag-langchain/ask', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + currentToken.value,
@@ -213,7 +213,7 @@ export function useChatSession(options) {
 
     if (payload.run_id) {
       tracePanelVisible.value = true;
-      await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'rag' });
+      await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'rag-langchain' });
     }
 
     await loadMessages(targetSessionId);

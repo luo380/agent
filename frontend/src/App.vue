@@ -467,7 +467,7 @@ function setConversationModeWithTraceGuard(mode) {
 
 async function handleToggleRunTrace(sessionId) {
   await toggleRunTracePanel(sessionId, {
-    kind: conversationMode.value === 'rag' ? 'rag' : 'chat',
+    kind: conversationMode.value === 'rag' ? 'rag-langchain' : 'chat',
   });
 }
 
