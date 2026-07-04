@@ -1,0 +1,115 @@
+阶段 5 学什么
+先抓 6 个核心点，就够了：
+Document
+LangChain 里很多东西都围绕 Document 走，本质就是“文本内容 + metadata”。
+
+Document Loader
+负责把 pdf、md、txt 等读成 Document 列表。
+
+Text Splitter
+负责把长文切成多个 chunk。你第 4 阶段已经做过，只是现在换成框架标准组件。
+
+Embeddings
+把 query 和 chunk 变成向量。你现在的 embed_text() 就是它的底层对应物。
+
+Retriever
+这是最关  retriever 定义成“输入自然语言 query，返回相关 documents 的接口”。
+参考：LangChain Retrieval 官方文档
+
+Runnable / LCEL
+这是新版 LangChain 很重要的能力。Runnable 可以 invoke、batch、stream，还能用 | 串起来形成链。
+参考：Runnable 官方源码说明
+参考：create_retrieval_chain 官方源码
+
+你项目里的映射关系
+拿你现在的代码直接对照就行：
+core/service/rag.py 里的 embed_text() -> Embeddings
+search_similar_chunks_by_embedding() -> VectorStore + Retriever
+rerank_chunks() -> 先保留手写，不急着框架化
+build_context() -> combine documents chain
+build_rag_messages() -> ChatPromptTemplate
+client.chat.completions.create() -> ChatModel
+answer_with_knowledge() -> retrieval chain / LCEL
+所以你不是“重学一套 RAG”，而是在学“框架如何包装你已经会的东西”。
+推荐执行顺序
+我建议你按 3 周做，节奏会比较舒服。
+第 1 周：建立概念，不改主代码
+目标：先看懂，再动手
+每天做什么：
+读懂 core/service/rag.py 现在这条链路
+自己写一张映射表：手写函数对应哪个 LangChain 组件
+跑一个最小 demo：
+txt -> splitter -> embeddings -> vector store -> retriever -> llm
+学会 3 个最基本调用：
+invoke
+ainvoke
+|
+输出一份自己的笔记：
+“什么是 retriever，什么是 runnable，什么是 LCEL”
+这一周不要碰接口，不要碰数据库，不要一上来改 api/routes/rag.py。
+第 2 周：在项目里并行做一版 LangChain RAG
+目标：和现有手写版共存
+建议新增这些文件：
+core/service/rag_langchain.py
+test/test_rag_langchain.py
+建议先实现这几个函数：
+build_langchain_documents(...)
+build_langchain_retriever(...)
+build_langchain_prompt(...)
+answer_with_knowledge_langchain(...)
+这一步的原则是：
+保留现有 rag.py
+不直接替换旧逻辑
+先做一版能跑通的 LangChain 版本
+这样你后面可以很清楚地对比：
+手写版怎么做
+LangChain 版怎么做
+哪些地方被框架抽象掉了
+第 3 周：接入现有工程能力
+目标：不是“demo 能跑”，而是“项目能用”
+这周再考虑：
+是否把 api/routes/rag.py 增加一个 LangChain 入口
+是否沿用现有 RagRun / RagRunStep
+是否保留你现在的引用补偿逻辑 ensure_answer_has_citations()
+是否继续使用你自己的 rerank
+我建议你大概率保留这些工程能力，因为它们正是你项目的亮点。
+最适合你的落地改造方案
+不要一步到位重构整条主链，建议这样分层：
+第一层先换“检索抽象”
+把“向量查找”改成 LangChain Retriever
+
+第二层再换“Prompt + LLM 调用”
+把 build_rag_messages() 和 chat completion 换成 ChatPromptTemplate + model
+
+第三层再换“整条链”
+最后用 create_retrieval_chain(...) 或 LCEL 把它们串起来
+
+这个顺序最稳，因为每次只替换一小块，不容易把整条链搞坏。
+你这个阶段的最终产出，建议定成 4 个
+一份 LangChain 版最小 RAG demo
+项目里的 rag_langchain.py
+一篇自己的总结：
+“手写 RAG 和 LangChain RAG 的映射关系”
+面试表达稿：
+“我不是只会调框架，我知道 Loader、Splitter、Embedding、Retriever、Chain 在底层分别对应什么”
+你要重点会说的求职关键词
+LangChain
+Retriever
+Runnable
+LCEL
+create_retrieval_chain
+RAG pipeline
+prompt assembly
+vector retrieval
+RetrievalQA 这个词你可以知道，但现在更建议你把重点放在 Retriever + Runnable + LCEL 这套新一点的表达上。
+你现在就可以开始的第一天任务
+重新读一遍 [core/service/rag.py](/E:/02agent/core/service/rag.py)
+写出这 5 个问题的答案：用户问题是在哪里变向量的？
+chunk 是在哪里被检索出来的？
+rerank 是在哪里做的？
+context 是在哪里拼出来的？
+最终回答是在哪里生成的？
+
+安装并跑一个最小 LangChain demo
+不接数据库，只先跑内存版文档检索
+把 demo 结果和你手写版流程做一一对照

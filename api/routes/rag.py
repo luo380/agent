@@ -123,6 +123,26 @@ async def ask_knowledge(
         step_embed_id = step_embed.id
 
         # 调用嵌入服务，将问题文本转换为向量（浮点数组）
+        # 执行顺序：
+        #   ┌──────────────────────────────────────────────┐
+        #   │ 1. 进入 ask_knowledge 协程                    │
+        #   │ 2. 走到 query_embedding = await embed_text(…) │
+        #   │    └─ 此时 embed_text 发起 HTTP 请求           │
+        #   │    └─ await 发现需要等网络 I/O                 │
+        #   │    └─ 把当前协程"挂起"，事件循环去处理别的请求   │
+        #   │    └─ （但当前执行流"停在这一行"不动）          │
+        #   │                                               │
+        #   │    ~~~ 网络响应回来了 ~~~                      │
+        #   │                                               │
+        #   │ 3. 事件循环唤醒这个协程，从第 126 行"恢复"        │
+        #   │    └─ embed_text 的 return 值（list[float]）  │
+        #   │    └─ 被赋给 query_embedding 变量              │
+        #   │                                               │
+        #   │ 4. 继续执行第 127 行及以后的代码                 │
+        #   │    └─ 此时 query_embedding 已经是实打实的向量了  │
+        #   │    └─ 后面 search_similar_chunks_by_embedding  │
+        #   │       可以正常使用，完全不会出现"拿不到值"的问题  │
+        #   └──────────────────────────────────────────────┘
         query_embedding = await embed_text(question, client=client)
 
         # 向量生成成功：更新步骤为成功状态，并记录输出维度（用于校验向量模型一致性）

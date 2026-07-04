@@ -56,11 +56,11 @@ def build_context(chunks: Sequence[RetrievedChunk]) -> str:
         #     此时用 "-" 占位，而不是显示 "None"
         #   - source_section 可能是空字符串，同理用 "-" 占位
         header = (
-            f"[{index}] "                                              # 搴忓彿锛岀敤鏂规嫭鍙锋嫭璧锋潵锛屽 [1]銆乕2]
-            f"document={chunk.document_name}; "                        # 鏂囨。鍚嶇О
-            f"chunk={chunk.chunk_index}; "                             # 鏂囨湰鍧楀湪鏂囨。鍐呯殑搴忓彿
-            f"page={chunk.source_page if chunk.source_page is not None else '-'}; "  # 椤电爜
-            f"section={chunk.source_section or '-'}"                   # 绔犺妭
+            f"[{index}] "  # 序号，用方括号括起来，如 [1]、[2]
+            f"document={chunk.document_name}; "  # 文档名称
+            f"chunk={chunk.chunk_index}; "  # 文本块在文档内的序号
+            f"page={chunk.source_page if chunk.source_page is not None else '-'}; "  # 页码
+            f"section={chunk.source_section or '-'}"  # 章节
         )
 
         # 依次添加到 blocks：标签头 → 内容 → 空行（分隔）
