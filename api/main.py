@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import auth, health, agents, session, runs, knowledge, rag, rag_langchain, rag_langchain_native
+from api.routes import auth, health, agents, session, runs, knowledge, rag, rag_langchain_native
 from core.db.session import init_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent

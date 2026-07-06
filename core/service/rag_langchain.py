@@ -519,7 +519,7 @@
 #        构建 LangChain Runnable 链
 #       |
 #       v
-#     7. chain.ainvoke(...)
+#     7. chain 调用(...)
 #        执行 LangChain 链，调用模型生成答案
 #       |
 #       v

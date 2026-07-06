@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Sequence
+import re
 from typing import Any
 
 from langchain_core.documents import Document
@@ -9,9 +10,14 @@ from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 
 from core.config import settings
-from core.service.embedding import embed_text
+from core.service.langchain_adapters import (
+    ProjectEmbeddings,
+    ProjectKnowledgeRetriever,
+    retrieved_chunk_to_langchain_document,
+    retrieved_chunks_to_langchain_documents,
+)
 from core.service.llm import get_default_model, get_default_temperature, get_llm_client
-from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar_chunks_by_embedding
+from core.service.retrieval import RetrievedChunk
 
 
 """
@@ -59,6 +65,9 @@ delta / done
 """
 
 
+STRUCTURED_SOURCE_SECTION_RE = re.compile(r"^(page|slide|sheet)_(\d+)$", re.IGNORECASE)
+
+
 def _chunk_value(chunk: RetrievedChunk | dict, key: str, default: Any = None) -> Any:
     """
     统一读取 chunk 字段。
@@ -72,50 +81,87 @@ def _chunk_value(chunk: RetrievedChunk | dict, key: str, default: Any = None) ->
     return getattr(chunk, key, default)
 
 
+def _normalize_source_page(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_user_facing_section(source_page: Any, source_section: Any) -> str:
+    section = str(source_section or "").strip()
+    if not section:
+        return ""
+
+    match = STRUCTURED_SOURCE_SECTION_RE.fullmatch(section)
+    if not match:
+        return section
+
+    kind, raw_index = match.groups()
+    index = int(raw_index)
+    page_number = _normalize_source_page(source_page)
+
+    if kind.lower() == "page":
+        if page_number == index:
+            return ""
+        return f"第 {index} 页"
+    if kind.lower() == "slide":
+        return f"第 {index} 张"
+    if kind.lower() == "sheet":
+        return f"工作表 {index}"
+    return section
+
+
+def _build_reference_line(document_name: str, source_page: Any, source_section: Any) -> str:
+    page_number = _normalize_source_page(source_page)
+    section_text = _format_user_facing_section(source_page, source_section)
+
+    parts = [document_name]
+    if page_number is not None:
+        parts.append(f"第 {page_number} 页")
+    if section_text:
+        parts.append(f"章节/区域：{section_text}")
+    return "；".join(parts)
+
+
 def chunk_to_document(chunk: RetrievedChunk | dict) -> Document:
     """
     把项目自己的 RetrievedChunk 转成 LangChain Document。
 
-    映射关系：
-    - chunk.content -> Document.page_content
-    - chunk.document_name -> metadata["document_name"]
-    - chunk.source_page -> metadata["source_page"]
-    - chunk.final_score -> metadata["score"]
+    这个函数现在只是一个兼容入口，真正的转换逻辑放在
+    langchain_adapters.retrieved_chunk_to_langchain_document(...) 里。
 
-    注意：
-    大模型不会直接读取向量数字。
-    它最终读取的是 page_content 里的文本。
-    metadata 主要用于引用来源、前端展示和调试。
+    流程图：
+
+    RetrievedChunk
+      |
+      v
+    retrieved_chunk_to_langchain_document(chunk)
+      |
+      v
+    LangChain Document
     """
-    final_score = _chunk_value(chunk, "final_score")
-    vector_score = _chunk_value(chunk, "vector_score")
-
-    return Document(
-        page_content=(_chunk_value(chunk, "content", "") or "").strip(),
-        metadata={
-            "document_id": _chunk_value(chunk, "document_id"),
-            "document_name": _chunk_value(chunk, "document_name", "unknown document"),
-            "chunk_id": _chunk_value(chunk, "chunk_id"),
-            "chunk_index": _chunk_value(chunk, "chunk_index"),
-            "source_page": _chunk_value(chunk, "source_page"),
-            "source_section": _chunk_value(chunk, "source_section"),
-            "vector_score": vector_score,
-            "keyword_score": _chunk_value(chunk, "keyword_score"),
-            "final_score": final_score,
-            "score": final_score if final_score is not None else vector_score,
-        },
-    )
+    return retrieved_chunk_to_langchain_document(chunk)
 
 
 def chunks_to_documents(chunks: Sequence[RetrievedChunk | dict]) -> list[Document]:
     """
-    把检索和 rerank 后的 chunks 转成 LangChain Documents。
+    把检索和 rerank 后的 chunks 批量转成 LangChain Documents。
 
-    这是手写 RAG 和 LangChain RAG 的关键分界点：
-    - 这之前是你自己的底层数据结构
-    - 这之后进入 LangChain 标准对象体系
+    这个函数保留下来是为了兼容旧调用点；真正的批量转换逻辑已经移动到
+    langchain_adapters.retrieved_chunks_to_langchain_documents(...)。
+
+    流程图：
+
+    list[RetrievedChunk]
+      |
+      v
+    retrieved_chunks_to_langchain_documents(chunks)
+      |
+      v
+    list[Document]
     """
-    return [chunk_to_document(chunk) for chunk in chunks]
+    return retrieved_chunks_to_langchain_documents(chunks)
 
 
 def format_documents_as_context(documents: Sequence[Document]) -> str:
@@ -133,7 +179,10 @@ def format_documents_as_context(documents: Sequence[Document]) -> str:
     for index, doc in enumerate(documents, start=1):
         metadata = doc.metadata
         source_page = metadata.get("source_page")
-        source_section = metadata.get("source_section")
+        source_section = _format_user_facing_section(
+            source_page,
+            metadata.get("source_section"),
+        )
 
         header = (
             f"[{index}] "
@@ -167,7 +216,10 @@ def build_citations_from_documents(documents: Sequence[Document]) -> list[dict]:
                 "chunk_id": metadata.get("chunk_id"),
                 "chunk_index": metadata.get("chunk_index"),
                 "source_page": metadata.get("source_page"),
-                "source_section": metadata.get("source_section") or "",
+                "source_section": _format_user_facing_section(
+                    metadata.get("source_page"),
+                    metadata.get("source_section"),
+                ),
                 "score": float(metadata.get("score") or 0.0),
                 "content": doc.page_content[:300],
             }
@@ -303,6 +355,33 @@ def build_langchain_chat_model(*, streaming: bool) -> ChatOpenAI:
     )
 
 
+def build_langchain_retriever(
+    db,
+    *,
+    user_id: int,
+    top_k: int = 5,
+    document_ids: Sequence[int] | None = None,
+    client: AsyncOpenAI | None = None,
+    candidate_multiplier: int = 3,
+) -> ProjectKnowledgeRetriever:
+    """
+    构建项目里的 LangChain Retriever。
+
+    这层 helper 的职责很简单：
+    - 把项目数据库会话、用户 ID、文档范围等参数收口到一个地方
+    - 给 Retriever 注入项目自己的 Embeddings 适配器
+    - 避免调用方直接拼装 Retriever 时遗漏依赖
+    """
+    return ProjectKnowledgeRetriever(
+        db=db,
+        user_id=user_id,
+        top_k=top_k,
+        candidate_multiplier=candidate_multiplier,
+        document_ids=list(document_ids) if document_ids else None,
+        embeddings=ProjectEmbeddings(client=client),
+    )
+
+
 def build_langchain_rag_chain(*, strict_mode: bool, streaming: bool = False) -> Runnable:
     """
     构建真正的 LangChain LCEL 生成链。
@@ -320,8 +399,6 @@ def build_langchain_rag_chain(*, strict_mode: bool, streaming: bool = False) -> 
     prompt | llm | StrOutputParser()
 
     非流式执行：
-    await chain.ainvoke({...})
-
     原生流式执行：
     async for delta in chain.astream({...}):
         ...
@@ -353,75 +430,31 @@ def ensure_answer_has_document_citations(answer_text: str, documents: Sequence[D
             return clean_answer
 
     reference_lines: list[str] = []
+    seen_references: set[tuple[Any, str, int | None, str]] = set()
 
-    for index, doc in enumerate(documents, start=1):
+    for doc in documents:
         metadata = doc.metadata
         document_name = metadata.get("document_name", "unknown document")
         source_page = metadata.get("source_page")
-        source_section = metadata.get("source_section")
+        section_text = _format_user_facing_section(source_page, metadata.get("source_section"))
 
-        page_text = f"；第 {source_page} 页" if source_page is not None else ""
-        section_text = f"；章节/区域：{source_section}" if source_section else ""
-        reference_lines.append(f"[{index}] {document_name}{page_text}{section_text}")
-
-    return f"{clean_answer}\n\n参考来源：\n" + "\n".join(reference_lines)
-
-
-async def answer_with_knowledge_langchain_native(
-    db,
-    *,
-    user_id: int,
-    question: str,
-    top_k: int = 5,
-    document_ids: Sequence[int] | None = None,
-    strict_mode: bool = True,
-    client: AsyncOpenAI | None = None,
-) -> dict:
-    """
-    LangChain 原生非流式 RAG。
-
-    这个函数用于普通 JSON 接口。
-    它同样使用 LCEL chain，只是执行方式是 chain.ainvoke。
-    """
-    client = client or get_llm_client()
-    query_embedding = await embed_text(question, client=client)
-
-    vector_hits = search_similar_chunks_by_embedding(
-        db,
-        user_id=user_id,
-        query_embedding=query_embedding,
-        top_k=max(top_k * 3, top_k),
-        document_ids=document_ids,
-    )
-    reranked_hits = rerank_chunks(question, vector_hits, top_k=top_k)
-    documents = chunks_to_documents(reranked_hits)
-    context = format_documents_as_context(documents)
-
-    citations = build_citations_from_documents(documents)
-    retrieved_chunk_payloads = build_retrieved_chunk_payloads(reranked_hits)
-
-    if not context and strict_mode:
-        answer_text = "知识库中没有找到相关内容。请尝试调整提问方式，或缩小/更换文档范围后再试。"
-    else:
-        chain = build_langchain_rag_chain(strict_mode=strict_mode, streaming=False)
-        answer_text = await chain.ainvoke(
-            {
-                "question": question,
-                "context": context or "未检索到相关知识库内容。",
-                "answer_instruction": build_answer_instruction(context, strict_mode),
-            }
+        reference_key = (
+            metadata.get("document_id"),
+            document_name,
+            _normalize_source_page(source_page),
+            section_text,
         )
+        if reference_key in seen_references:
+            continue
+        seen_references.add(reference_key)
+        reference_lines.append(_build_reference_line(document_name, source_page, section_text))
 
-    answer_text = ensure_answer_has_document_citations(answer_text, documents)
+    numbered_reference_lines = [
+        f"[{index}] {line}"
+        for index, line in enumerate(reference_lines, start=1)
+    ]
 
-    return {
-        "answer": answer_text,
-        "citations": citations,
-        "retrieved_chunks": retrieved_chunk_payloads,
-        "documents": documents,
-        "context": context,
-        "query_embedding_dim": len(query_embedding),
-    }
+    return f"{clean_answer}\n\n参考来源：\n" + "\n".join(numbered_reference_lines)
 
 
 async def stream_answer_with_knowledge_langchain_native(
@@ -435,40 +468,106 @@ async def stream_answer_with_knowledge_langchain_native(
     client: AsyncOpenAI | None = None,
 ) -> AsyncIterator[dict]:
     """
-    LangChain 原生流式 RAG。
+    LangChain 原生流式 RAG 主流程。
 
-    这里真正使用：
-    async for delta in chain.astream(...)
+    这个函数现在分成两段：
 
-    这就是你想看的 chain.invoke -> chain.stream/astream 思路。
-    由于 FastAPI 路由是 async，所以这里用 astream，而不是同步 stream。
+    第一段：LangChain Retriever 负责检索
+    - 把用户问题转成向量
+    - 在当前用户知识库中做向量召回
+    - 对候选 chunk 做 rerank
+    - 把最终 chunk 转成 LangChain Document
+
+    第二段：LangChain LCEL Chain 负责生成
+    - 把 Document 格式化成 context
+    - 使用 ChatPromptTemplate 拼 prompt
+    - 使用 ChatOpenAI(streaming=True) 调模型
+    - 使用 StrOutputParser 输出纯文本
+    - 通过 chain.astream(...) 原生流式返回 delta
+
+    完整流程图：
+
+    用户问题 question
+      |
+      v
+    build_langchain_retriever(...)
+      |
+      v
+    ProjectKnowledgeRetriever.aretrieve_documents(question)
+      |
+      +--> ProjectEmbeddings.aembed_query(question)
+      |      |
+      |      v
+      |   embed_text(question)
+      |
+      +--> search_similar_chunks_by_embedding(...)
+      |
+      +--> rerank_chunks(...)
+      |
+      +--> RetrievedChunk -> LangChain Document
+      |
+      v
+    list[Document]
+      |
+      v
+    format_documents_as_context(documents)
+      |
+      v
+    ChatPromptTemplate
+      |
+      v
+    ChatOpenAI(streaming=True)
+      |
+      v
+    StrOutputParser()
+      |
+      v
+    chain.astream(chain_input)
+      |
+      +--> yield {event: "delta"}
+      |
+      v
+    yield {event: "done"}
     """
     client = client or get_llm_client()
 
-    # Step 1：用户问题转 query embedding。
-    # 仍然复用你第 4 阶段已经写好的 embedding 能力。
-    query_embedding = await embed_text(question, client=client)
-
-    # Step 2：在当前用户知识库范围内做向量检索。
-    # top_k * 3 是候选召回数量，给 rerank 留出空间。
-    vector_hits = search_similar_chunks_by_embedding(
+    # Step 1：构建 LangChain Retriever。
+    # 这里不再在 service 里手写 embed/search/rerank，而是交给 Retriever 抽象处理。
+    # 好处：service 层只关心“我要相关文档”，底层怎么检索由 Retriever 封装。
+    retriever = build_langchain_retriever(
         db,
         user_id=user_id,
-        query_embedding=query_embedding,
-        top_k=max(top_k * 3, top_k),
+        top_k=top_k,
         document_ids=document_ids,
+        client=client,
     )
 
-    # Step 3：对候选 chunk 做精排。
-    reranked_hits = rerank_chunks(question, vector_hits, top_k=top_k)
+    # Step 2：通过 LangChain Retriever 获取相关 Document。
+    # 注意：这行代码看起来很短，但内部完整执行了：
+    # 1. 用户问题 -> query embedding
+    # 2. 向量召回候选 chunk
+    # 3. rerank 精排
+    # 4. RetrievedChunk -> LangChain Document
+    documents = await retriever.aretrieve_documents(question)
 
-    # Step 4：转成 LangChain Document。
-    documents = chunks_to_documents(reranked_hits)
+    # Retriever 内部会缓存 rerank 后的原始 RetrievedChunk，
+    # 这里取出来是为了继续兼容前端 retrieved_chunks 调试展示。
+    reranked_hits = retriever.last_reranked_hits
 
-    # Step 5：Document -> prompt context。
+    # Step 3：把 LangChain Document 列表拼成 prompt 里的 context 文本。
+    # 大模型最终读的是字符串，所以 Document 需要在这里格式化成上下文。
     context = format_documents_as_context(documents)
 
-    # Step 6：提前准备前端最终需要的数据。
+    # Step 4??????????????????
+    # citations???????????????????????
+    # retrieved_chunks??????????? chunk ???????
+    # Step 4：准备前端需要的引用来源和检索明细。
+    # citations：偏用户可读，用来展示“答案引用了哪些文档”。
+    # retrieved_chunks：偏调试，用来展示每个 chunk 的分数和内容。
+
+    # Step 4：准备前端需要的引用来源和检索明细。
+    # citations：偏用户可读，用来展示“答案引用了哪些文档”。
+    # retrieved_chunks：偏调试，用来展示每个 chunk 的分数和内容。
     citations = build_citations_from_documents(documents)
     retrieved_chunk_payloads = build_retrieved_chunk_payloads(reranked_hits)
 
@@ -480,7 +579,7 @@ async def stream_answer_with_knowledge_langchain_native(
             "retrieved_chunk_count": len(retrieved_chunk_payloads),
             "citation_count": len(citations),
             "context_length": len(context),
-            "query_embedding_dim": len(query_embedding),
+            "query_embedding_dim": retriever.last_query_embedding_dim,
         },
     }
 
@@ -496,7 +595,7 @@ async def stream_answer_with_knowledge_langchain_native(
                 "citations": citations,
                 "retrieved_chunks": retrieved_chunk_payloads,
                 "context": context,
-                "query_embedding_dim": len(query_embedding),
+                "query_embedding_dim": retriever.last_query_embedding_dim,
             },
         }
         return
@@ -538,6 +637,6 @@ async def stream_answer_with_knowledge_langchain_native(
             "citations": citations,
             "retrieved_chunks": retrieved_chunk_payloads,
             "context": context,
-            "query_embedding_dim": len(query_embedding),
+            "query_embedding_dim": retriever.last_query_embedding_dim,
         },
     }

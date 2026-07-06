@@ -23,8 +23,8 @@ from core.db.models import (
     User,
     now,
 )
+from core.db.session import SessionLocal
 from core.service.rag_langchain_native import (
-    answer_with_knowledge_langchain_native,
     stream_answer_with_knowledge_langchain_native,
 )
 from core.service.rag_trace import (
@@ -61,153 +61,152 @@ def sse_event(event: str, data: dict) -> str:
     """
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-
-@router.post("/ask")
-async def ask_knowledge_langchain_native(
-    payload: RagAskRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """
-    LangChain 原生非流式 RAG 接口。
-
-    用途：
-    - 保留普通 JSON 返回能力
-    - 方便和流式接口做对比
-    - 内部使用 chain.ainvoke(...)
-    """
-    question = payload.question.strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="Question is empty")
-
-    session = (
-        db.query(ChatSession)
-        .filter(ChatSession.id == payload.session_id, ChatSession.user_id == user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    user_message = Message(
-        session_id=session.id,
-        role="user",
-        content=question,
-        mode=MESSAGE_MODE_RAG,
-        source=MESSAGE_SOURCE_RAG_ASK,
-    )
-    db.add(user_message)
-    session.updated_at = now()
-    db.commit()
-    db.refresh(user_message)
-
-    rag_run = create_rag_run(
-        db,
-        user_id=user.id,
-        question=question,
-        top_k=payload.top_k,
-        strict_mode=payload.strict_mode,
-        document_ids=payload.document_ids,
-    )
-
-    step_answer_id = None
-    step_citation_id = None
-
-    try:
-        step_answer = create_rag_step(
-            db,
-            rag_run_id=rag_run.id,
-            step_type="langchain_native_rag_answer",
-            step_name="Generate answer with native LangChain RAG",
-            input_payload={
-                "question_length": len(question),
-                "top_k": payload.top_k,
-                "strict_mode": payload.strict_mode,
-                "document_ids": payload.document_ids,
-            },
-        )
-        step_answer_id = step_answer.id
-
-        result = await answer_with_knowledge_langchain_native(
-            db,
-            user_id=user.id,
-            question=question,
-            top_k=payload.top_k,
-            document_ids=payload.document_ids or None,
-            strict_mode=payload.strict_mode,
-        )
-
-        answer_text = result["answer"]
-        retrieved_chunks = result["retrieved_chunks"]
-        citations = result["citations"]
-        context = result["context"]
-
-        complete_rag_step(
-            db,
-            step_answer,
-            output_payload={
-                "answer_length": len(answer_text),
-                "retrieved_chunk_count": len(retrieved_chunks),
-                "citation_count": len(citations),
-                "context_length": len(context),
-                "query_embedding_dim": result["query_embedding_dim"],
-            },
-        )
-
-        step_citation = create_rag_step(
-            db,
-            rag_run_id=rag_run.id,
-            step_type="langchain_native_format_citations",
-            step_name="Format native LangChain citations",
-            input_payload={"chunk_count": len(retrieved_chunks)},
-        )
-        step_citation_id = step_citation.id
-
-        complete_rag_step(
-            db,
-            step_citation,
-            output_payload={"citation_count": len(citations)},
-        )
-
-        assistant_message = Message(
-            session_id=session.id,
-            role="assistant",
-            content=answer_text,
-            mode=MESSAGE_MODE_RAG,
-            source=MESSAGE_SOURCE_RAG_ASK,
-        )
-        db.add(assistant_message)
-        session.updated_at = now()
-        db.commit()
-        db.refresh(assistant_message)
-
-        complete_rag_run(db, rag_run, answer=answer_text)
-
-        response = RagAskResponse(
-            question=question,
-            answer=answer_text,
-            run_id=rag_run.id,
-            strict_mode=payload.strict_mode,
-            citations=[RagCitationResponse.model_validate(item) for item in citations],
-            retrieved_chunks=[
-                RagRetrievedChunkResponse.model_validate(item) for item in retrieved_chunks
-            ],
-        )
-        return {"data": response}
-
-    except Exception as exc:
-        error_message = str(exc)
-
-        for step_id in [step_answer_id, step_citation_id]:
-            fail_open_rag_step(db, step_id, error_message)
-
-        latest_run = db.query(RagRuns).filter(RagRuns.id == rag_run.id).first()
-        if latest_run:
-            fail_rag_run(db, latest_run, error_message=error_message)
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Native LangChain RAG ask failed: {error_message}",
-        )
+#
+# @router.post("/ask")
+# async def ask_knowledge_langchain_native(
+#     payload: RagAskRequest,
+#     db: Session = Depends(get_db),
+#     user: User = Depends(get_current_user),
+# ):
+#     """
+#     LangChain 原生非流式 RAG 接口。
+#
+#     用途：
+#     - 保留普通 JSON 返回能力
+#     - 方便和流式接口做对比
+#     """
+#     question = payload.question.strip()
+#     if not question:
+#         raise HTTPException(status_code=400, detail="Question is empty")
+#
+#     session = (
+#         db.query(ChatSession)
+#         .filter(ChatSession.id == payload.session_id, ChatSession.user_id == user.id)
+#         .first()
+#     )
+#     if not session:
+#         raise HTTPException(status_code=404, detail="Session not found")
+#
+#     user_message = Message(
+#         session_id=session.id,
+#         role="user",
+#         content=question,
+#         mode=MESSAGE_MODE_RAG,
+#         source=MESSAGE_SOURCE_RAG_ASK,
+#     )
+#     db.add(user_message)
+#     session.updated_at = now()
+#     db.commit()
+#     db.refresh(user_message)
+#
+#     rag_run = create_rag_run(
+#         db,
+#         user_id=user.id,
+#         question=question,
+#         top_k=payload.top_k,
+#         strict_mode=payload.strict_mode,
+#         document_ids=payload.document_ids,
+#     )
+#
+#     step_answer_id = None
+#     step_citation_id = None
+#
+#     try:
+#         step_answer = create_rag_step(
+#             db,
+#             rag_run_id=rag_run.id,
+#             step_type="langchain_native_rag_answer",
+#             step_name="Generate answer with native LangChain RAG",
+#             input_payload={
+#                 "question_length": len(question),
+#                 "top_k": payload.top_k,
+#                 "strict_mode": payload.strict_mode,
+#                 "document_ids": payload.document_ids,
+#             },
+#         )
+#         step_answer_id = step_answer.id
+#
+#         result = await answer_with_knowledge_langchain_native(
+#             db,
+#             user_id=user.id,
+#             question=question,
+#             top_k=payload.top_k,
+#             document_ids=payload.document_ids or None,
+#             strict_mode=payload.strict_mode,
+#         )
+#
+#         answer_text = result["answer"]
+#         retrieved_chunks = result["retrieved_chunks"]
+#         citations = result["citations"]
+#         context = result["context"]
+#
+#         complete_rag_step(
+#             db,
+#             step_answer,
+#             output_payload={
+#                 "answer_length": len(answer_text),
+#                 "retrieved_chunk_count": len(retrieved_chunks),
+#                 "citation_count": len(citations),
+#                 "context_length": len(context),
+#                 "query_embedding_dim": result["query_embedding_dim"],
+#             },
+#         )
+#
+#         step_citation = create_rag_step(
+#             db,
+#             rag_run_id=rag_run.id,
+#             step_type="langchain_native_format_citations",
+#             step_name="Format native LangChain citations",
+#             input_payload={"chunk_count": len(retrieved_chunks)},
+#         )
+#         step_citation_id = step_citation.id
+#
+#         complete_rag_step(
+#             db,
+#             step_citation,
+#             output_payload={"citation_count": len(citations)},
+#         )
+#
+#         assistant_message = Message(
+#             session_id=session.id,
+#             role="assistant",
+#             content=answer_text,
+#             mode=MESSAGE_MODE_RAG,
+#             source=MESSAGE_SOURCE_RAG_ASK,
+#         )
+#         db.add(assistant_message)
+#         session.updated_at = now()
+#         db.commit()
+#         db.refresh(assistant_message)
+#
+#         complete_rag_run(db, rag_run, answer=answer_text)
+#
+#         response = RagAskResponse(
+#             question=question,
+#             answer=answer_text,
+#             run_id=rag_run.id,
+#             strict_mode=payload.strict_mode,
+#             citations=[RagCitationResponse.model_validate(item) for item in citations],
+#             retrieved_chunks=[
+#                 RagRetrievedChunkResponse.model_validate(item) for item in retrieved_chunks
+#             ],
+#         )
+#         return {"data": response}
+#
+#     except Exception as exc:
+#         error_message = str(exc)
+#
+#         for step_id in [step_answer_id, step_citation_id]:
+#             fail_open_rag_step(db, step_id, error_message)
+#
+#         latest_run = db.query(RagRuns).filter(RagRuns.id == rag_run.id).first()
+#         if latest_run:
+#             fail_rag_run(db, latest_run, error_message=error_message)
+#
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Native LangChain RAG ask failed: {error_message}",
+#         )
 
 
 @router.post("/ask/stream")
@@ -218,9 +217,7 @@ async def ask_knowledge_langchain_native_stream(
 ):
     """
     LangChain 原生流式 RAG 接口。
-
     路由层流程图：
-
     前端 POST /api/rag-langchain/ask/stream
       |
       v
@@ -243,16 +240,22 @@ async def ask_knowledge_langchain_native_stream(
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty")
 
+    user_id = user.id
+    request_top_k = payload.top_k
+    request_strict_mode = payload.strict_mode
+    request_document_ids = list(payload.document_ids or [])
+
     session = (
         db.query(ChatSession)
-        .filter(ChatSession.id == payload.session_id, ChatSession.user_id == user.id)
+        .filter(ChatSession.id == payload.session_id, ChatSession.user_id == user_id)
         .first()
     )
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    session_id = session.id
     user_message = Message(
-        session_id=session.id,
+        session_id=session_id,
         role="user",
         content=question,
         mode=MESSAGE_MODE_RAG,
@@ -265,47 +268,52 @@ async def ask_knowledge_langchain_native_stream(
 
     rag_run = create_rag_run(
         db,
-        user_id=user.id,
+        user_id=user_id,
         question=question,
-        top_k=payload.top_k,
-        strict_mode=payload.strict_mode,
-        document_ids=payload.document_ids,
+        top_k=request_top_k,
+        strict_mode=request_strict_mode,
+        document_ids=request_document_ids,
     )
+    rag_run_id = rag_run.id
 
     async def event_generator():
+        inner_db = SessionLocal()
         step_answer = None
+        step_answer_id = None
         step_citation = None
+        step_citation_id = None
 
         try:
             step_answer = create_rag_step(
-                db,
-                rag_run_id=rag_run.id,
+                inner_db,
+                rag_run_id=rag_run_id,
                 step_type="langchain_native_rag_stream",
                 step_name="Generate streamed answer with native LangChain RAG",
                 input_payload={
                     "question_length": len(question),
-                    "top_k": payload.top_k,
-                    "strict_mode": payload.strict_mode,
-                    "document_ids": payload.document_ids,
+                    "top_k": request_top_k,
+                    "strict_mode": request_strict_mode,
+                    "document_ids": request_document_ids,
                 },
             )
+            step_answer_id = step_answer.id
 
             yield sse_event(
                 "start",
                 {
-                    "run_id": rag_run.id,
-                    "strict_mode": payload.strict_mode,
-                    "top_k": payload.top_k,
+                    "run_id": rag_run_id,
+                    "strict_mode": request_strict_mode,
+                    "top_k": request_top_k,
                 },
             )
 
             async for event in stream_answer_with_knowledge_langchain_native(
-                db,
-                user_id=user.id,
+                inner_db,
+                user_id=user_id,
                 question=question,
-                top_k=payload.top_k,
-                document_ids=payload.document_ids or None,
-                strict_mode=payload.strict_mode,
+                top_k=request_top_k,
+                document_ids=request_document_ids or None,
+                strict_mode=request_strict_mode,
             ):
                 event_name = event["event"]
                 data = event["data"]
@@ -322,7 +330,7 @@ async def ask_knowledge_langchain_native_stream(
                     answer_text = data["answer"]
 
                     complete_rag_step(
-                        db,
+                        inner_db,
                         step_answer,
                         output_payload={
                             "answer_length": len(answer_text),
@@ -334,56 +342,61 @@ async def ask_knowledge_langchain_native_stream(
                     )
 
                     step_citation = create_rag_step(
-                        db,
-                        rag_run_id=rag_run.id,
+                        inner_db,
+                        rag_run_id=rag_run_id,
                         step_type="langchain_native_stream_citations",
                         step_name="Format streamed native LangChain citations",
-                        input_payload={"chunk_count": len(data["retrieved_chunks"])},
+                        input_payload={"chunk_count": len(data["retrieved_chunks"])} ,
                     )
+                    step_citation_id = step_citation.id
                     complete_rag_step(
-                        db,
+                        inner_db,
                         step_citation,
-                        output_payload={"citation_count": len(data["citations"])},
+                        output_payload={"citation_count": len(data["citations"])} ,
                     )
 
                     assistant_message = Message(
-                        session_id=session.id,
+                        session_id=session_id,
                         role="assistant",
                         content=answer_text,
                         mode=MESSAGE_MODE_RAG,
                         source=MESSAGE_SOURCE_RAG_ASK,
                     )
-                    db.add(assistant_message)
-                    session.updated_at = now()
-                    db.commit()
-                    db.refresh(assistant_message)
+                    inner_db.add(assistant_message)
+                    inner_session = inner_db.query(ChatSession).filter(ChatSession.id == session_id).first()
+                    if inner_session:
+                        inner_session.updated_at = now()
+                    inner_db.commit()
+                    inner_db.refresh(assistant_message)
 
-                    complete_rag_run(db, rag_run, answer=answer_text)
+                    latest_run = inner_db.query(RagRuns).filter(RagRuns.id == rag_run_id).first()
+                    if latest_run:
+                        complete_rag_run(inner_db, latest_run, answer=answer_text)
 
-                    data["run_id"] = rag_run.id
+                    data["run_id"] = rag_run_id
                     yield sse_event("done", data)
                     return
 
         except Exception as exc:
             error_message = str(exc)
 
-            if step_answer and step_answer.status == RAG_STEP_STATUS_RUNNING:
-                fail_rag_step(db, step_answer, error_message=error_message)
+            fail_open_rag_step(inner_db, step_answer_id, error_message)
+            fail_open_rag_step(inner_db, step_citation_id, error_message)
 
-            if step_citation and step_citation.status == RAG_STEP_STATUS_RUNNING:
-                fail_rag_step(db, step_citation, error_message=error_message)
-
-            latest_run = db.query(RagRuns).filter(RagRuns.id == rag_run.id).first()
+            latest_run = inner_db.query(RagRuns).filter(RagRuns.id == rag_run_id).first()
             if latest_run:
-                fail_rag_run(db, latest_run, error_message=error_message)
+                fail_rag_run(inner_db, latest_run, error_message=error_message)
 
             yield sse_event(
                 "error",
                 {
                     "message": f"Native LangChain RAG stream failed: {error_message}",
-                    "run_id": rag_run.id,
+                    "run_id": rag_run_id,
                 },
             )
+
+        finally:
+            inner_db.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
