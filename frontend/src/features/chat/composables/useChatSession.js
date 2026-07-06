@@ -47,6 +47,53 @@ export function useChatSession(options) {
     };
   }
 
+  async function consumeSseStream(response, onEvent) {
+    if (!response.body) {
+      throw new Error('流式响应不可用');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    const processBlock = async (block) => {
+      if (!block.trim()) return;
+      const lines = block.split('\n');
+      let eventName = 'message';
+      const dataLines = [];
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+
+      const payloadText = dataLines.join('\n');
+      let payload = {};
+      if (payloadText) {
+        try {
+          payload = JSON.parse(payloadText);
+        } catch (error) {
+          console.warn('SSE 数据解析失败:', payloadText, error);
+          return;
+        }
+      }
+
+      await onEvent(eventName, payload);
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
+      for (const block of blocks) await processBlock(block);
+    }
+
+    if (buffer.trim()) await processBlock(buffer.trim());
+  }
+
   function buildRagAssistantExtra(payload) {
     return {
       mode: 'rag',
@@ -106,33 +153,9 @@ export function useChatSession(options) {
   }
 
   async function consumeChatStream(response, assistantDraftId) {
-    if (!response.body) {
-      throw new Error('流式响应不可用');
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
     let assistantText = '';
 
-    const processBlock = async (block) => {
-      if (!block.trim()) return;
-      const lines = block.split('\n');
-      let eventName = 'message';
-      const dataLines = [];
-      for (const line of lines) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-      }
-      const payloadText = dataLines.join('\n');
-      let payload = {};
-      if (payloadText) {
-        try {
-          payload = JSON.parse(payloadText);
-        } catch (error) {
-          console.warn('SSE 数据解析失败:', payloadText, error);
-          return;
-        }
-      }
+    await consumeSseStream(response, async (eventName, payload) => {
       if (eventName === 'start') {
         if (payload.run_id) {
           tracePanelVisible.value = true;
@@ -161,24 +184,106 @@ export function useChatSession(options) {
         }
         throw new Error(payload.message || '流式会话返回错误');
       }
-    };
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      buffer += chunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-      const blocks = buffer.split('\n\n');
-      buffer = blocks.pop() || '';
-      for (const block of blocks) await processBlock(block);
-    }
-    if (buffer.trim()) await processBlock(buffer.trim());
+    });
   }
 
-  async function sendRagMessage(targetSessionId, assistantDraftId, now, content) {
+  async function consumeRagStream(response, targetSessionId, assistantDraftMessage) {
+    let assistantText = '';
+    let currentRunId = null;
+    let finalPayload = null;
+    let hasReceivedDelta = false;
+    let draftAssistantMessage = { ...assistantDraftMessage };
+
+    const syncDraftAssistantMessage = (content, extra = {}) => {
+      draftAssistantMessage = buildAssistantMessage(draftAssistantMessage, content, extra);
+      replaceSessionOverlayMessage(
+        targetSessionId,
+        assistantDraftMessage.id,
+        draftAssistantMessage,
+      );
+    };
+
+    await consumeSseStream(response, async (eventName, payload) => {
+      if (eventName === 'start') {
+        currentRunId = payload.run_id || currentRunId;
+        if (currentRunId) {
+          tracePanelVisible.value = true;
+          await loadRunTraceById(currentRunId, { allowMissing: true, kind: 'rag-langchain' });
+          startRunTracePolling(currentRunId);
+        }
+        syncDraftAssistantMessage('正在检索知识库...', {
+          run_id: currentRunId,
+          strict_mode: Boolean(payload.strict_mode),
+        });
+        return;
+      }
+
+      if (eventName === 'context_ready') {
+        const retrievedChunkCount = Number(payload.retrieved_chunk_count) || 0;
+        const contextStatusText = retrievedChunkCount > 0
+          ? `已检索到 ${retrievedChunkCount} 条相关内容，正在生成回答...`
+          : '未检索到相关内容，正在整理回答...';
+
+        if (!hasReceivedDelta) {
+          syncDraftAssistantMessage(contextStatusText, {
+            run_id: currentRunId,
+            strict_mode: draftAssistantMessage.strict_mode,
+          });
+        }
+
+        setWorkspaceNotice(contextStatusText, 'info');
+        if (currentRunId) {
+          await loadRunTraceById(currentRunId, { silent: true, allowMissing: true, kind: 'rag-langchain' });
+        }
+        return;
+      }
+
+      if (eventName === 'delta') {
+        hasReceivedDelta = true;
+        assistantText += payload.content || '';
+        syncDraftAssistantMessage(assistantText, {
+          run_id: currentRunId,
+          strict_mode: draftAssistantMessage.strict_mode,
+        });
+        return;
+      }
+
+      if (eventName === 'done') {
+        finalPayload = {
+          ...payload,
+          run_id: payload.run_id || currentRunId,
+        };
+        currentRunId = finalPayload.run_id || currentRunId;
+        syncDraftAssistantMessage(
+          finalPayload.answer || assistantText || draftAssistantMessage.content || '',
+          buildRagAssistantExtra(finalPayload),
+        );
+        stopRunTracePolling();
+        if (currentRunId) {
+          await loadRunTraceById(currentRunId, { allowMissing: true, kind: 'rag-langchain' });
+        }
+        return;
+      }
+
+      if (eventName === 'error') {
+        stopRunTracePolling();
+        if (payload.run_id || currentRunId || runTraceCurrentId.value) {
+          await loadRunTraceById(
+            payload.run_id || currentRunId || runTraceCurrentId.value,
+            { silent: true, allowMissing: true, kind: 'rag-langchain' },
+          );
+        }
+        throw new Error(payload.message || '知识库流式问答返回错误');
+      }
+    });
+
+    return finalPayload;
+  }
+
+  async function sendRagMessage(targetSessionId, assistantDraftMessage, now, content) {
     stopRunTracePolling();
 
-    const response = await fetch(apiPrefix + '/rag-langchain/ask', {
+    const response = await fetch(apiPrefix + '/rag-langchain/ask/stream', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + currentToken.value,
@@ -193,35 +298,22 @@ export function useChatSession(options) {
       }),
     });
 
-    const result = await parseApiResponse(response);
-    const payload = result?.data || {};
-
-    replaceSessionOverlayMessage(
-      targetSessionId,
-      assistantDraftId,
-      buildAssistantMessage(
-        {
-          id: payload.run_id ? 'rag-' + payload.run_id : assistantDraftId,
-          session_id: targetSessionId,
-          role: 'assistant',
-          created_at: now,
-        },
-        payload.answer || '',
-        buildRagAssistantExtra(payload),
-      ),
-    );
-
-    if (payload.run_id) {
-      tracePanelVisible.value = true;
-      await loadRunTraceById(payload.run_id, { allowMissing: true, kind: 'rag-langchain' });
+    if (!response.ok) {
+      await parseApiResponse(response);
+      return;
     }
 
+    const payload = await consumeRagStream(response, targetSessionId, assistantDraftMessage);
+
     await loadMessages(targetSessionId);
-    hydrateLatestRagAssistantMessage(payload, now);
+    if (payload) {
+      hydrateLatestRagAssistantMessage(payload, now);
+    }
     clearSessionOverlayMessages(targetSessionId);
   }
 
   async function sendMessage() {
+
     const content = draftMessage.value.trim();
     if (!content) return;
     if (!activeAgentId.value) {
@@ -282,7 +374,7 @@ export function useChatSession(options) {
 
     try {
       if (isRagMode) {
-        await sendRagMessage(targetSessionId, optimisticAssistantId, now, content);
+        await sendRagMessage(targetSessionId, optimisticAssistantMessage, now, content);
       } else {
         const response = await fetch(apiPrefix + '/sessions/session/' + targetSessionId + '/chat/stream', {
           method: 'POST',
