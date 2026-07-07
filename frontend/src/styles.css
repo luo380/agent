@@ -429,6 +429,7 @@ button, input, textarea, select { font: inherit; }
   justify-content: space-between;
   gap: 10px;
 }
+.rag-section-head { align-items: flex-start; }
 .mode-summary-value,
 .rag-score { color: #344054; font-weight: 600; }
 .knowledge-document-card,
@@ -445,6 +446,22 @@ button, input, textarea, select { font: inherit; }
 .rag-citation-copy,
 .retrieved-chunk-copy { line-height: 1.7; white-space: pre-wrap; }
 .rag-citation-card { display: grid; gap: 10px; }
+.rag-citation-main,
+.rag-section-heading { display: grid; gap: 4px; }
+.rag-citation-summary,
+.rag-section-description,
+.rag-debug-note {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.rag-citation-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.rag-citation-copy {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.04);
+  color: #344054;
+}
 .rag-citation-title-row,
 .retrieved-chunk-head {
   display: flex;
@@ -490,6 +507,7 @@ button, input, textarea, select { font: inherit; }
 .rag-debug-collapse .ant-collapse-content-box {
   padding: 0 14px 14px !important;
 }
+.rag-debug-note { padding: 0 2px; }
 .knowledge-document-actions { justify-content: flex-end; }
 
 .chat-workspace-view {

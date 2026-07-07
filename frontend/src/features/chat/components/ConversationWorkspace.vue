@@ -80,7 +80,10 @@
 
                 <div v-if="message.citations?.length" class="rag-section-card">
                   <div class="rag-section-head">
-                    <div class="rag-section-title">引用来源</div>
+                    <div class="rag-section-heading">
+                      <div class="rag-section-title">参考资料</div>
+                      <div class="rag-section-description">以下资料参与了本次回答生成，优先展示更相关的片段。</div>
+                    </div>
                     <a-tag color="processing">{{ message.citations.length }} 条</a-tag>
                   </div>
                   <div class="rag-citation-list">
@@ -90,29 +93,27 @@
                       class="rag-citation-card"
                     >
                       <div class="rag-citation-title-row">
-                        <strong>{{ getDisplayText(citation.document_name, '未命名文档') }}</strong>
-                        <span class="rag-score">score {{ formatScore(citation.score) }}</span>
+                        <div class="rag-citation-main">
+                          <strong>{{ getDisplayText(citation.document_name, '未命名文档') }}</strong>
+                          <div class="rag-citation-summary">
+                            {{ formatCitationLocation(citation) }}
+                            <span v-if="hasScore(citation.score)"> · 相关度 {{ formatScore(citation.score) }}</span>
+                          </div>
+                        </div>
+                        <span class="rag-score" v-if="hasScore(citation.score)">Top Match</span>
                       </div>
-                      <div class="rag-citation-fields">
-                        <div class="rag-citation-field">
-                          <span class="rag-field-label">document_name</span>
-                          <span>{{ getDisplayText(citation.document_name, '未命名文档') }}</span>
-                        </div>
-                        <div class="rag-citation-field">
-                          <span class="rag-field-label">source_page</span>
-                          <span>{{ formatSourcePage(citation.source_page) }}</span>
-                        </div>
-                        <div class="rag-citation-field">
-                          <span class="rag-field-label">source_section</span>
-                          <span>{{ getDisplayText(citation.source_section, '未标注章节') }}</span>
-                        </div>
+                      <div
+                        v-if="hasSourcePage(citation.source_page) || hasMeaningfulText(citation.source_section)"
+                        class="rag-citation-tags"
+                      >
+                        <a-tag v-if="hasSourcePage(citation.source_page)" color="blue">{{ formatSourcePage(citation.source_page) }}</a-tag>
+                        <a-tag v-if="hasMeaningfulText(citation.source_section)">{{ getDisplayText(citation.source_section) }}</a-tag>
                       </div>
                       <div class="rag-citation-meta">
                         <span>{{ formatChunkLabel(citation.chunk_index) }}</span>
-                        <span v-if="citation.chunk_id != null"> · chunk_id {{ citation.chunk_id }}</span>
+                        <span v-if="citation.chunk_id != null"> · 片段 ID {{ citation.chunk_id }}</span>
                       </div>
                       <div class="rag-citation-copy">
-                        <div class="rag-field-label">content</div>
                         <div>{{ getDisplayText(citation.content, '暂无引用内容') }}</div>
                       </div>
                     </article>
@@ -122,11 +123,12 @@
                 <a-collapse v-if="message.retrieved_chunks?.length" ghost class="rag-debug-collapse">
                   <a-collapse-panel key="retrieved-chunks">
                     <template #header>
-                      <div class="rag-section-title">检索到的片段 / 调试信息</div>
+                      <div class="rag-section-title">检索过程（调试）</div>
                     </template>
                     <template #extra>
                       <a-tag>{{ message.retrieved_chunks.length }} 条</a-tag>
                     </template>
+                    <div class="rag-debug-note">这里展示的是召回并重排后的候选片段，用于排查命中效果，不等同于答案中的直接引用。</div>
                     <div class="retrieved-chunk-list">
                       <article
                         v-for="(chunk, chunkIndex) in message.retrieved_chunks"
@@ -397,10 +399,34 @@ function getDisplayText(value, fallback = '--') {
   return String(value);
 }
 
+function hasMeaningfulText(value) {
+  if (typeof value === 'string') return value.trim().length > 0;
+  return value != null && String(value).trim().length > 0;
+}
+
+function hasSourcePage(value) {
+  return Number.isFinite(Number(value));
+}
+
+function hasScore(value) {
+  return Number.isFinite(Number(value));
+}
+
 function formatSourcePage(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '未标注';
   return '第 ' + number + ' 页';
+}
+
+function formatCitationLocation(citation) {
+  const parts = [];
+  if (hasSourcePage(citation?.source_page)) {
+    parts.push(formatSourcePage(citation.source_page));
+  }
+  if (hasMeaningfulText(citation?.source_section)) {
+    parts.push(getDisplayText(citation.source_section));
+  }
+  return parts.join(' · ') || '未标注位置';
 }
 
 function formatChunkLabel(value) {
