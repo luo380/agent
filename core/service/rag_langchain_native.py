@@ -414,8 +414,8 @@ def ensure_answer_has_document_citations(answer_text: str, documents: Sequence[D
 
     Prompt 虽然要求模型输出 [1]、[2]，但模型不一定每次都遵守。
     所以生成结束后统一检查：
-    - 如果答案里已经有 [1] 这类引用，直接返回
-    - 如果没有，就追加“参考来源”
+    - 如果答案里已经有完整“参考来源”块，直接返回
+    - 否则统一追加“参考来源”
     """
     clean_answer = (answer_text or "").strip()
 
@@ -425,9 +425,8 @@ def ensure_answer_has_document_citations(answer_text: str, documents: Sequence[D
     if not clean_answer:
         clean_answer = "我根据知识库整理了相关信息。"
 
-    for index in range(1, len(documents) + 1):
-        if f"[{index}]" in clean_answer:
-            return clean_answer
+    if "参考来源：" in clean_answer:
+        return clean_answer
 
     reference_lines: list[str] = []
     seen_references: set[tuple[Any, str, int | None, str]] = set()
