@@ -271,6 +271,7 @@ async def answer_with_knowledge(
         db,
         user_id=user_id,
         query_embedding=query_embedding,
+        query_text=question,
         top_k=max(top_k * 3, top_k),
         document_ids=document_ids,
     )

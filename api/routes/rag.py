@@ -181,9 +181,10 @@ async def ask_knowledge(
         vector_hits = search_similar_chunks_by_embedding(
             db,
             user_id=user.id,
-            query_embedding=query_embedding,
-            top_k=max(payload.top_k * 3, payload.top_k),
-            document_ids=payload.document_ids or None,
+            query_embedding=query_embedding,   # 用户问题的向量表示（已提前通过 embed_text() 生成）
+            query_text=question,                # 用户问题的文本表示（用于后续精排）
+            top_k=max(payload.top_k * 3, payload.top_k),     #放大召回数量：返回 top_k × 3 条候选（至少不小于原 top_k）
+            document_ids=payload.document_ids or None,       # 若客户端传入了文档范围，则仅在范围内检索
         )
 
         # 检索成功：记录最终候选数量

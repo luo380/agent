@@ -599,6 +599,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
             self.db,
             user_id=self.user_id,
             query_embedding=query_embedding,
+            query_text=query,
             top_k=recall_top_k,
             document_ids=self.document_ids or None,
         )

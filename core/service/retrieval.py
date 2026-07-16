@@ -150,6 +150,98 @@ def phrase_overlap_score(query_text: str, chunk_text: str) -> float:
 #
 # 交集：{} → 0个匹配
 # 得分：0 / 3 = 0.0 ❌
+
+QUERY_FOCUS_ANCHORS = (
+    "\u652f\u6301",    # 支持
+    "\u5982\u4f55",    # 如何
+    "\u600e\u4e48",    # 怎么
+    "\u600e\u6837",    # 怎样
+    "\u662f\u5426",    # 是否
+    "\u53ef\u4ee5",    # 可以
+    "\u80fd\u5426",    # 能否
+    "\u6709\u54ea\u4e9b",# 有哪些
+    "\u6709\u4ec0\u4e48",# 有什么
+    "\u54ea\u79cd",    # 哪种
+    "\u54ea\u51e0\u79cd",# 哪几种
+    "\u4ec0\u4e48",    # 什么
+)
+
+
+
+# 作用：安全地将查询形式添加到列表中，避免重复。
+def _append_query_form(forms: list[str], seen: set[str], value: str) -> None:
+    clean_value = re.sub(r"\s+", "", (value or "").lower())   # 去空格、转小写
+    if not clean_value or clean_value in seen:      # 空值或已存在则跳过 避免无效或重复的查询形式
+        return
+    seen.add(clean_value)
+    forms.append(clean_value)
+
+
+# 作用：为用户问题生成多种查询形式，用于后续检索时提高召回率。
+def build_recall_query_forms(query_text: str) -> list[str]:
+    # 1. 添加原始查询（标准化后）
+    normalized_text = re.sub(r"\s+", "", (query_text or "").lower())
+    if not normalized_text:
+        return []
+
+    forms: list[str] = []
+    seen: set[str] = set()
+    _append_query_form(forms, seen, normalized_text)
+    # 2. 提取焦点查询（基于 QUERY_FOCUS_ANCHORS）
+    focused_query = normalized_text
+    for anchor_text in QUERY_FOCUS_ANCHORS:
+        anchor_index = normalized_text.find(anchor_text)
+        if anchor_index > 0:
+            candidate = normalized_text[anchor_index:]   # 提取锚点后的内容
+            if len(candidate) >= max(len(anchor_text) + 2, 4):
+                focused_query = candidate
+                _append_query_form(forms, seen, focused_query)
+            break
+
+    # 3. 添加长关键词（长度≥4的分词结果）
+    for token in sorted(tokenize(focused_query), key=len, reverse=True):
+        if len(token) >= 4:
+            _append_query_form(forms, seen, token)
+        if len(forms) >= 5:   # 最多生成5种形式
+            break
+
+    return forms
+# 原始问题：扫地机器人是否可以水洗
+#        │
+#        ├─ 找到锚点："是否"
+#        │
+#        └─ 提取焦点："是否可以水洗"
+#
+# 最终查询形式：
+# 1. "扫地机器人是否可以水洗"（原问题）
+# 2. "是否可以水洗"          （焦点查询）
+
+def coarse_recall_score(query_text: str | None, chunk_text: str, vector_score: float) -> float:
+    query_forms = build_recall_query_forms(query_text or "")    # 生成查询的多种形式
+    if not query_forms:
+        return round(vector_score, 6)
+
+    primary_form = query_forms[0]  # 主要查询形式（原问题）
+    focused_forms = query_forms[1:] or [primary_form]   # 扩展查询形式
+
+    # 主查询的奖励分
+    primary_bonus = (
+        (keyword_overlap_score(primary_form, chunk_text) * 0.03)
+        + (phrase_overlap_score(primary_form, chunk_text) * 0.05)
+    )
+    # 扩展查询的奖励分（权重更高）
+    focused_bonus = max(
+        (
+            (keyword_overlap_score(form, chunk_text) * 0.22)
+            + (phrase_overlap_score(form, chunk_text) * 0.30)
+        )
+        for form in focused_forms
+    )
+    # 最终分数 = 向量相似度 + 主查询奖励 + 扩展查询奖励
+    #          = vector_score + (keyword×0.03 + phrase×0.05) + max(keyword×0.22 + phrase×0.30)
+
+    return round(vector_score + primary_bonus + focused_bonus, 6)
+
 def keyword_overlap_score(query_text: str, chunk_text: str) -> float:
     # 关键词重合度，作为 rerank 的补充信号
     query_tokens = tokenize(query_text)
@@ -236,6 +328,7 @@ def search_similar_chunks_by_embedding(
     user_id: int,
     # 查询向量（将用户问题转成的数字列表）
     query_embedding: list[float],
+    query_text: str | None = None,
     # 可选：限定搜索哪些文档
     document_ids: Sequence[int] | None = None,
     # 最多返回几条结果
@@ -248,7 +341,7 @@ def search_similar_chunks_by_embedding(
     # 先粗检索：向量相似度
     candidates = load_user_chunks(db, user_id=user_id, document_ids=document_ids)
 
-    scored: list[RetrievedChunk] = []
+    scored: list[tuple[float, RetrievedChunk]] = []
     for chunk in candidates:
         chunk_embedding = parse_embedding(chunk.embedding_json)
         if not chunk_embedding:
@@ -257,23 +350,30 @@ def search_similar_chunks_by_embedding(
         vector_score = cosine_similarity(query_embedding, chunk_embedding)
         if vector_score <= 0:
             continue
-        # 添加粗匹配结果
+
+        recall_score = coarse_recall_score(query_text, chunk.content, vector_score)
         scored.append(
-            RetrievedChunk(
-                document_id=chunk.document_id,
-                document_name=chunk.document_name,
-                chunk_id=chunk.chunk_id,
-                chunk_index=chunk.chunk_index,
-                content=chunk.content,
-                source_page=chunk.source_page,
-                source_section=chunk.source_section,
-                embedding_json=chunk.embedding_json,
-                vector_score=vector_score,
+            (
+                recall_score,
+                RetrievedChunk(
+                    document_id=chunk.document_id,
+                    document_name=chunk.document_name,
+                    chunk_id=chunk.chunk_id,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    source_page=chunk.source_page,
+                    source_section=chunk.source_section,
+                    embedding_json=chunk.embedding_json,
+                    vector_score=vector_score,
+                ),
             )
         )
 
-    scored.sort(key=lambda item: (item.vector_score, item.chunk_index), reverse=True)
-    return scored[:top_k]
+    scored.sort(
+        key=lambda item: (item[0], item[1].vector_score, item[1].chunk_index),
+        reverse=True,
+    )
+    return [item[1] for item in scored[:top_k]]
 
 # 用户查询 "如何用Python处理PDF"
 #         │
@@ -295,17 +395,24 @@ def rerank_chunks(
     # 再精排：向量分 + 关键词重合度
     reranked: list[RetrievedChunk] = []
 
+    query_forms = build_recall_query_forms(query_text)
+    primary_form = query_forms[0] if query_forms else query_text
+    focused_forms = query_forms[1:] or [primary_form]
+
     for chunk in chunks:
-        keyword_score = keyword_overlap_score(query_text, chunk.content)
-        phrase_score = phrase_overlap_score(query_text, chunk.content)
-        # Blend semantic recall with lexical and phrase matches.
-        # 0.72 keeps vector similarity dominant.
-        # 0.18 adds keyword overlap support.
-        # 0.10 boosts exact short phrase hits.
+        keyword_score = max(keyword_overlap_score(form, chunk.content) for form in focused_forms)
+        phrase_score = max(phrase_overlap_score(form, chunk.content) for form in focused_forms)
+        primary_keyword_score = keyword_overlap_score(primary_form, chunk.content)
+        primary_phrase_score = phrase_overlap_score(primary_form, chunk.content)
+        # Blend semantic recall with a stronger focus on the question tail.
+        # For prefixed queries like "?????????????",
+        # the focused tail should outrank generic product mentions.
         final_score = round(
-            (chunk.vector_score * 0.72)
-            + (keyword_score * 0.18)
-            + (phrase_score * 0.10),
+            (chunk.vector_score * 0.42)
+            + (primary_keyword_score * 0.04)
+            + (primary_phrase_score * 0.04)
+            + (keyword_score * 0.22)
+            + (phrase_score * 0.28),
             6,
         )
 
