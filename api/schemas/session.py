@@ -36,4 +36,5 @@ class MessageResponse(BaseModel):
     content: str
     mode: str
     source: str
+    strict_mode: bool | None = None
     created_at: datetime

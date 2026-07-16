@@ -260,6 +260,7 @@ async def ask_knowledge_langchain_native_stream(
         content=question,
         mode=MESSAGE_MODE_RAG,
         source=MESSAGE_SOURCE_RAG_ASK,
+        strict_mode=1 if request_strict_mode else 0,
     )
     db.add(user_message)
     session.updated_at = now()
@@ -361,6 +362,7 @@ async def ask_knowledge_langchain_native_stream(
                         content=answer_text,
                         mode=MESSAGE_MODE_RAG,
                         source=MESSAGE_SOURCE_RAG_ASK,
+                        strict_mode=1 if request_strict_mode else 0,
                     )
                     inner_db.add(assistant_message)
                     inner_session = inner_db.query(ChatSession).filter(ChatSession.id == session_id).first()

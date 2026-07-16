@@ -45,6 +45,11 @@ def ensure_message_columns() -> None:
             "ALTER TABLE messages ADD COLUMN source VARCHAR(50) NOT NULL DEFAULT 'chat_stream'"
         )
 
+    if "strict_mode" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE messages ADD COLUMN strict_mode INTEGER NULL"
+        )
+
     if not alter_statements:
         return
 

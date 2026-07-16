@@ -2,7 +2,10 @@ import asyncio
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-
+# ------------------------------
+# LangChain 相关导入
+# ------------------------------
+# 从LangChain核心库导入文档加载器基类
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -30,6 +33,13 @@ from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar
 - Text Splitter
 - Embeddings
 - Retriever
+
+1.document_parser.py 先把文件解析成统一结构  
+2.ProjectDocumentLoader 把它变成 LangChain Document  
+3.ProjectTextSplitter 把 Document 切成 chunk  
+4.ProjectEmbeddings 给 chunk 做向量  
+5.ProjectKnowledgeRetriever 在问答时检索相关 chunk  
+6.后面再喂给你的 chain 做流式回答
 
 入库链路流程图：
 
@@ -99,24 +109,27 @@ def _chunk_value(chunk: RetrievedChunk | dict, key: str, default: Any = None) ->
     - 测试代码里 chunk 有时会用 dict 模拟
     - 后面转换 Document 时就不用关心具体类型
     """
+    # 如果是字典类型，用 dict.get() 方法读取
     if isinstance(chunk, dict):
         return chunk.get(key, default)
+    # 如果是对象类型，用 getattr() 方法读取属性
     return getattr(chunk, key, default)
 
-
+#
 def retrieved_chunk_to_langchain_document(chunk: RetrievedChunk | dict) -> Document:
     """
     把项目自己的 RetrievedChunk 转成 LangChain Document。
-
+    【转换函数】把项目自己的 RetrievedChunk 转成 LangChain 的 Document 格式。
     这是第 4 阶段和第 5 阶段之间最关键的桥：
 
-    RetrievedChunk.content       -> Document.page_content
-    RetrievedChunk.document_id   -> Document.metadata["document_id"]
-    RetrievedChunk.document_name -> Document.metadata["document_name"]
-    RetrievedChunk.chunk_id      -> Document.metadata["chunk_id"]
-    RetrievedChunk.chunk_index   -> Document.metadata["chunk_index"]
-    RetrievedChunk.source_page   -> Document.metadata["source_page"]
-    RetrievedChunk.final_score   -> Document.metadata["score"]
+  转换映射关系：
+    - RetrievedChunk.content       -> Document.page_content      (大模型读取的文本内容)
+    - RetrievedChunk.document_id   -> Document.metadata["document_id"]   (文档唯一标识)
+    - RetrievedChunk.document_name -> Document.metadata["document_name"] (文档名称)
+    - RetrievedChunk.chunk_id      -> Document.metadata["chunk_id"]      (块唯一标识)
+    - RetrievedChunk.chunk_index   -> Document.metadata["chunk_index"]   (块在文档中的序号)
+    - RetrievedChunk.source_page   -> Document.metadata["source_page"]   (来源页码)
+    - RetrievedChunk.final_score   -> Document.metadata["score"]         (最终排序分数)
 
     流程图：
 
@@ -131,12 +144,18 @@ def retrieved_chunk_to_langchain_document(chunk: RetrievedChunk | dict) -> Docum
       v
     交给 LangChain Prompt / Chain / 前端引用展示
     """
+
+    # 读取最终排序分数
     final_score = _chunk_value(chunk, "final_score")
+    # 读取最终排序分数
     vector_score = _chunk_value(chunk, "vector_score")
 
+    # 创建 LangChain Document 对象
     return Document(
         # page_content 是大模型真正会读到的文本。
         page_content=(_chunk_value(chunk, "content", "") or "").strip(),
+
+        # metadata 是元数据，不直接作为大模型的输入，但用于引用、调试和前端展示
         metadata={
             # metadata 不直接作为回答内容，它主要用于引用、调试和前端展示。
             "document_id": _chunk_value(chunk, "document_id"),
@@ -153,12 +172,13 @@ def retrieved_chunk_to_langchain_document(chunk: RetrievedChunk | dict) -> Docum
     )
 
 
+# 把多个检索结果批量转成 LangChain Document 列表
 def retrieved_chunks_to_langchain_documents(
     chunks: Sequence[RetrievedChunk | dict],
 ) -> list[Document]:
     """
     批量把检索结果转成 LangChain Document。
-
+    【批量转换函数】把多个检索结果批量转成 LangChain Document 列表。
     流程图：
 
     list[RetrievedChunk]
@@ -172,38 +192,45 @@ def retrieved_chunks_to_langchain_documents(
       v
     list[Document]
     """
+    # 使用列表推导式，逐个转换每个 chunk
     return [retrieved_chunk_to_langchain_document(chunk) for chunk in chunks]
 
 
+
+# ==============================================
+# 文档加载器类
+# ==============================================
 class ProjectDocumentLoader(BaseLoader):
     """
     项目版 LangChain Document Loader。
+    【文档加载器类】项目版的 LangChain Document Loader。
+     对应 LangChain 概念：Document Loader（文档加载器）
 
-    对应 LangChain 概念：Document Loader。
-
-    作用：
-    - 负责把文件读进来
-    - 负责调用项目已有的 parse_document(...)
-    - 产出 LangChain 标准 Document
+    核心作用：
+     1. 负责读取用户上传的文件
+     2. 调用项目已有的 parse_document() 函数解析文件
+     3. 产出 LangChain 标准的 Document 格式
 
     注意：
     Loader 不负责切块。切块交给 ProjectTextSplitter。
+        重要分工：
+        - Loader 只负责"加载"，不负责"切块"
+        - 切块工作交给 ProjectTextSplitter 来做
 
     流程图：
-
-    file_path + file_type
-      |
-      v
-    ProjectDocumentLoader.load()
-      |
-      v
-    parse_document(file_path, file_type)
-      |
-      v
-    parsed_document
-      |
-      v
-    Document(page_content=full_text, metadata={parsed_document, file_type, file_path})
+        文件路径(file_path) + 文件类型(file_type)
+          |
+          v
+        ProjectDocumentLoader.load()
+          |
+          v
+        parse_document(file_path, file_type) 解析文件
+          |
+          v
+        parsed_document (包含全文、页码、章节等)
+          |
+          v
+        Document(page_content=全文, metadata=解析信息)
     """
 
     def __init__(
@@ -232,20 +259,28 @@ class ProjectDocumentLoader(BaseLoader):
     def lazy_load(self) -> Iterator[Document]:
         """
         LangChain Loader 标准接口。
+        【LangChain标准接口】懒加载文档。
 
-        这里先 yield 一个整篇文档 Document。
-        后续再交给 TextSplitter 切成多个 chunk Document。
+        这是 LangChain Loader 要求必须实现的方法。
+        使用 yield 关键字实现懒加载，先返回一个包含整篇文档的 Document，
+        后续由 TextSplitter 切成小块。
         """
+
+        # 调用解析函数获取解析结果
         parsed_document = self.load_parsed_document()
+        # 获取文档名称（优先从metadata取，没有就从文件路径提取）
         file_name = self.metadata.get("document_name") or Path(self.file_path).name
 
+        # 使用 yield 返回 Document（懒加载模式）
         yield Document(
+            # page_content 是文档的完整文本内容
             page_content=parsed_document.get("full_text", "") or "",
+            # metadata 包含文档的元信息
             metadata={
-                **self.metadata,
-                "document_name": file_name,
-                "file_path": self.file_path,
-                "file_type": self.file_type,
+                **self.metadata,  # 保留传入的额外元数据
+                "document_name": file_name,  # 文档名称
+                "file_path": self.file_path,  # 文件路径
+                "file_type": self.file_type,  # 文件类型
                 # 把结构化解析结果继续传给 Splitter，避免丢失页码和章节信息。
                 "parsed_document": parsed_document,
                 "parser_metadata": parsed_document.get("metadata") or {},
@@ -253,15 +288,18 @@ class ProjectDocumentLoader(BaseLoader):
         )
 
 
+# ==============================================
+# 文本分割器类
+# ==============================================
 class ProjectTextSplitter(TextSplitter):
     """
-    项目版 LangChain Text Splitter。
+    文本分割器类】项目版的 LangChain Text Splitter。
 
-    对应 LangChain 概念：Text Splitter。
-
-    它不替换你原来的切块算法，而是包装你原来的切块函数：
-    - chunk_parsed_document(...)：优先使用，保留页码/章节等结构化来源
-    - chunk_text(...)：兜底使用，只处理普通纯文本
+    对应 LangChain 概念：Text Splitter（文本分割器）
+    设计理念：
+    - 不替换原来的切块算法，而是包装已有的函数
+    - 优先使用 chunk_parsed_document()：保留页码、章节等结构化信息
+    - 兜底使用 chunk_text()：处理没有结构化信息的纯文本
 
     流程图：
 
@@ -281,11 +319,17 @@ class ProjectTextSplitter(TextSplitter):
              普通 chunk Documents
     """
 
-    def __init__(self, *, chunk_size: int = 500, chunk_overlap: int = 100) -> None:
+    def __init__(
+            self,
+            *,
+            chunk_size: int = 500,  # 每个切块的最大字符数，默认500
+            chunk_overlap: int = 100  # 相邻切块之间的重叠字符数，默认100
+    ) -> None:
+        # 调用父类构造函数，传入配置参数
         super().__init__(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            add_start_index=False,
+            add_start_index=False,  # 不需要添加起始索引
         )
         self.project_chunk_size = chunk_size
         self.project_chunk_overlap = chunk_overlap

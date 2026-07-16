@@ -63,6 +63,7 @@ async def ask_knowledge(
         content=question,
         mode=MESSAGE_MODE_RAG,
         source=MESSAGE_SOURCE_RAG_ASK,
+        strict_mode=1 if payload.strict_mode else 0,
     )
     db.add(user_message)
     session.updated_at = now()
@@ -329,6 +330,7 @@ async def ask_knowledge(
             content=answer_text,
             mode=MESSAGE_MODE_RAG,
             source=MESSAGE_SOURCE_RAG_ASK,
+            strict_mode=1 if payload.strict_mode else 0,
         )
         db.add(assistant_message)
         session.updated_at = now()

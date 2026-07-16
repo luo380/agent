@@ -85,6 +85,7 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(String(20), default=MESSAGE_MODE_CHAT, nullable=False)
     source: Mapped[str] = mapped_column(String(50), default=MESSAGE_SOURCE_CHAT_STREAM, nullable=False)
+    strict_mode: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
 
 
