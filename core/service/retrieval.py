@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from core.db.models import KnowledgeChunks, KnowledgeDocuments
 
 # 简单分词：中英文数字都保留
-TOKEN_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]+")
+LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 @dataclass
 class RetrievedChunk:
@@ -81,9 +82,56 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 # 简单分词：中英文数字都保留
+def _generate_cjk_ngrams(text: str, *, min_size: int = 2, max_size: int = 4) -> set[str]:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return set()
+
+    max_window = min(max_size, len(clean_text))
+    if max_window < min_size:
+        return {clean_text} if clean_text else set()
+
+    ngrams: set[str] = set()
+    for window_size in range(min_size, max_window + 1):
+        for start in range(0, len(clean_text) - window_size + 1):
+            ngrams.add(clean_text[start:start + window_size])
+    return ngrams
+
+
 def tokenize(text: str) -> set[str]:
-    # 用于简单 rerank
-    return {token.lower() for token in TOKEN_RE.findall((text or "").lower())}
+    # Used by rerank for mixed Chinese and English queries
+    normalized_text = (text or "").lower()
+    tokens = {token for token in LATIN_TOKEN_RE.findall(normalized_text) if token}
+
+    for token in CJK_TOKEN_RE.findall(normalized_text):
+        clean_token = token.strip()
+        if not clean_token:
+            continue
+        tokens.add(clean_token)
+        tokens.update(_generate_cjk_ngrams(clean_token))
+
+    return tokens
+
+
+def phrase_overlap_score(query_text: str, chunk_text: str) -> float:
+    query_text = re.sub(r"\s+", "", (query_text or "").lower())
+    chunk_text = re.sub(r"\s+", "", (chunk_text or "").lower())
+    if not query_text or not chunk_text:
+        return 0.0
+
+    if query_text in chunk_text:
+        return 1.0
+
+    query_terms: set[str] = set(LATIN_TOKEN_RE.findall(query_text))
+    for token in CJK_TOKEN_RE.findall(query_text):
+        query_terms.update(_generate_cjk_ngrams(token, min_size=2, max_size=6))
+
+    meaningful_terms = {term for term in query_terms if len(term) >= 2}
+    if not meaningful_terms:
+        return 0.0
+
+    matched_terms = {term for term in meaningful_terms if term in chunk_text}
+    return len(matched_terms) / len(meaningful_terms)
 
 
 
@@ -249,16 +297,17 @@ def rerank_chunks(
 
     for chunk in chunks:
         keyword_score = keyword_overlap_score(query_text, chunk.content)
-        # 加权融合得分
-        # 这是核心公式：
-        # - 向量得分权重
-        # 0.8（语义相似度占主导）
-        # - 关键词得分权重
-        # 0.2（字面匹配做补充）
-        # - round(..., 6): 保留6位小数避免浮点数精度问题
-        # final_score = 0.8 × vector_score + 0.2 × keyword_score
-        # 语义相似度（80 %）        关键词重合（20 %）
-        final_score = round((chunk.vector_score * 0.8) + (keyword_score * 0.2), 6)
+        phrase_score = phrase_overlap_score(query_text, chunk.content)
+        # Blend semantic recall with lexical and phrase matches.
+        # 0.72 keeps vector similarity dominant.
+        # 0.18 adds keyword overlap support.
+        # 0.10 boosts exact short phrase hits.
+        final_score = round(
+            (chunk.vector_score * 0.72)
+            + (keyword_score * 0.18)
+            + (phrase_score * 0.10),
+            6,
+        )
 
         reranked.append(
         RetrievedChunk(
