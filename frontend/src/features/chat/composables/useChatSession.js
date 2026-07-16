@@ -393,7 +393,7 @@ export function useChatSession(options) {
       }
 
       await loadSessions();
-      setWorkspaceNotice(isRagMode ? '知识库问答已完成。' : '消息发送成功。', 'success');
+      setWorkspaceNotice('', 'info');
     } catch (error) {
       setWorkspaceNotice(error?.message || '发送消息失败', 'error');
       if (isRagMode) {

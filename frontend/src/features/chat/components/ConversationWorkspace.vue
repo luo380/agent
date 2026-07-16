@@ -387,7 +387,9 @@ function formatScore(value) {
 }
 
 function formatStrictMode(value) {
-  return value ? '严格模式' : '宽松模式';
+  if (value === true || value === 1) return '严格模式';
+  if (value === false || value === 0) return '宽松模式';
+  return '模式未知';
 }
 
 function getDisplayText(value, fallback = '--') {

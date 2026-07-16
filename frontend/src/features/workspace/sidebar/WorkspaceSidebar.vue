@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="sider-shell">
     <ToolRail
       :tool-items="toolItems"
@@ -42,26 +42,6 @@
         />
       </template>
 
-      <template v-else-if="activeToolKey === 'knowledge'">
-        <KnowledgeToolPanel
-          :knowledge-documents="knowledgeDocuments"
-          :knowledge-documents-loading="knowledgeDocumentsLoading"
-          :uploading-document-names="uploadingDocumentNames"
-          :deleting-knowledge-document-id="deletingKnowledgeDocumentId"
-          :conversation-mode="conversationMode"
-          :rag-scope-type="ragScopeType"
-          :rag-document-ids="ragDocumentIds"
-          :active-scoped-documents="activeScopedDocuments"
-          :format-time="formatTime"
-          @refresh-knowledge="$emit('refresh-knowledge')"
-          @upload-knowledge-document="$emit('upload-knowledge-document', $event)"
-          @delete-knowledge-document="$emit('delete-knowledge-document', $event)"
-          @add-doc-to-scope="$emit('add-doc-to-scope', $event)"
-          @set-conversation-mode="$emit('set-conversation-mode', $event)"
-          @update:rag-scope-type="$emit('update:rag-scope-type', $event)"
-          @update:rag-document-ids="$emit('update:rag-document-ids', $event)"
-        />
-      </template>
 
       <template v-else>
         <ToolsCenterPanel
@@ -76,7 +56,6 @@
 <script setup>
 import AgentOverviewPanel from '../panels/AgentOverviewPanel.vue';
 import ChatToolPanel from '../panels/ChatToolPanel.vue';
-import KnowledgeToolPanel from '../panels/KnowledgeToolPanel.vue';
 import ToolRail from './ToolRail.vue';
 import ToolsCenterPanel from '../panels/ToolsCenterPanel.vue';
 

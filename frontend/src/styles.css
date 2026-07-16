@@ -1103,3 +1103,209 @@ button, input, textarea, select { font: inherit; }
     grid-template-columns: 1fr;
   }
 }
+
+.knowledge-workspace-view {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.knowledge-workspace-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.knowledge-workspace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.knowledge-workspace-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.knowledge-library-panel,
+.knowledge-detail-card,
+.knowledge-detail-empty {
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.knowledge-library-panel {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 14px;
+  padding: 18px;
+  min-height: 0;
+}
+
+.knowledge-library-head,
+.knowledge-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.knowledge-library-scroll,
+.knowledge-detail-stage {
+  min-height: 0;
+}
+
+.knowledge-library-list,
+.knowledge-detail-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.knowledge-library-scroll {
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.knowledge-library-item {
+  width: 100%;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  padding: 14px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+  display: grid;
+  gap: 8px;
+  transition: box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+
+.knowledge-library-item:hover,
+.knowledge-library-item.is-active {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef5ff 100%);
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.24), 0 12px 28px rgba(22, 119, 255, 0.08);
+}
+
+.knowledge-library-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.knowledge-library-item-head strong {
+  color: var(--text-strong);
+  line-height: 1.55;
+}
+
+.knowledge-library-item-meta,
+.knowledge-scope-empty,
+.knowledge-scope-copy,
+.knowledge-detail-copy {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.knowledge-library-item-meta,
+.knowledge-library-item-flags,
+.knowledge-detail-actions,
+.knowledge-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.knowledge-detail-stage {
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.knowledge-detail-stack {
+  align-content: start;
+}
+
+.knowledge-detail-card,
+.knowledge-detail-empty {
+  padding: 20px;
+}
+
+.knowledge-detail-empty {
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+}
+
+.knowledge-detail-title.ant-typography {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+
+.knowledge-detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 14px;
+}
+
+.knowledge-metric-card {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eff5ff 100%);
+  display: grid;
+  gap: 4px;
+}
+
+.knowledge-metric-label {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.knowledge-detail-actions,
+.knowledge-scope-actions {
+  margin-top: 16px;
+}
+
+@media (max-width: 1280px) {
+  .knowledge-workspace-grid {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1080px) {
+  .knowledge-workspace-head {
+    flex-direction: column;
+  }
+
+  .knowledge-workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .knowledge-detail-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-library-item-head,
+  .knowledge-detail-head,
+  .knowledge-detail-actions,
+  .knowledge-scope-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

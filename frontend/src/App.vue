@@ -6,7 +6,7 @@
 
   <div v-else-if="currentView === 'workspace'" class="workspace-page">
     <a-layout class="workspace-layout">
-      <a-layout-sider :width="448" theme="light" class="workspace-sider">
+      <a-layout-sider :width="activeToolKey === 'knowledge' ? 92 : 448" theme="light" class="workspace-sider">
         <WorkspaceSidebar
           :tool-items="toolItems"
           :active-tool-key="activeToolKey"
@@ -84,6 +84,29 @@
           @delete-agent="deleteAgent"
           @save-agent-config="saveAgentConfig"
           @refresh-agents="loadAgents"
+        />
+
+        <KnowledgeWorkspaceView
+          v-else-if="activeToolKey === 'knowledge'"
+          :workspace-notice="workspaceNotice"
+          :workspace-notice-type="workspaceNoticeType"
+          :knowledge-documents="knowledgeDocuments"
+          :knowledge-documents-loading="knowledgeDocumentsLoading"
+          :uploading-document-names="uploadingDocumentNames"
+          :deleting-knowledge-document-id="deletingKnowledgeDocumentId"
+          :conversation-mode="conversationMode"
+          :rag-scope-type="ragScopeType"
+          :rag-document-ids="ragDocumentIds"
+          :active-scoped-documents="activeScopedDocuments"
+          :format-time="formatTime"
+          @close-notice="workspaceNotice = ''"
+          @refresh-knowledge="loadKnowledgeDocuments"
+          @upload-knowledge-document="handleUploadKnowledgeDocument"
+          @delete-knowledge-document="deleteKnowledgeDocument"
+          @add-doc-to-scope="addDocumentToScope"
+          @update:conversation-mode="setConversationModeWithTraceGuard"
+          @update:rag-scope-type="setRagScopeType"
+          @update:rag-document-ids="setRagDocumentIds"
         />
 
         <ChatWorkspaceView
@@ -177,6 +200,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import AgentManagementView from './features/agent/components/AgentManagementView.vue';
 import AuthScreen from './features/auth/components/AuthScreen.vue';
 import ChatWorkspaceView from './features/chat/components/ChatWorkspaceView.vue';
+import KnowledgeWorkspaceView from './features/knowledge/components/KnowledgeWorkspaceView.vue';
 import { useChatSession } from './features/chat/composables/useChatSession';
 import { useKnowledgeBase } from './features/knowledge/composables/useKnowledgeBase';
 import CreateAgentModal from './features/agent/components/CreateAgentModal.vue';
