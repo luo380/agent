@@ -11,7 +11,16 @@ from core.config import settings
 from core.db.models import User, KnowledgeDocuments, DOCUMENT_STATUS_UPLOADED, DOCUMENT_STATUS_PARSING, \
     DOCUMENT_STATUS_CHUNKING, DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED, KnowledgeChunks
 from core.service.langchain_adapters import ProjectDocumentLoader, ProjectEmbeddings, ProjectTextSplitter
+from core.service.vector_index import rebuild_user_faiss_index
 router = APIRouter()
+
+
+def sync_user_faiss_index(db: Session, *, user_id: int) -> None:
+    try:
+        rebuild_user_faiss_index(db, user_id=user_id)
+    except Exception:
+        # RAG can still fall back to brute-force retrieval if the index sync fails.
+        return
 
 # 这里把“允许上传的类型”与“后端实际支持解析的类型”对齐。
 # 好处是接口行为更一致，避免前端能传、后端却解析失败的尴尬情况。
@@ -167,6 +176,7 @@ async def upload_file( file: UploadFile  = File(...),
         document.status = DOCUMENT_STATUS_READY
         db.commit()
         db.refresh(document)
+        sync_user_faiss_index(db, user_id=user.id)
 
     except Exception as exc:
         db.rollback()
@@ -248,4 +258,5 @@ def delete_document(
 
     db.delete(document)
     db.commit()
+    sync_user_faiss_index(db, user_id=user.id)
     return {"data": payload}

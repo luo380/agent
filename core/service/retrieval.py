@@ -7,6 +7,7 @@ from sqlalchemy import Sequence
 from sqlalchemy.orm import Session
 
 from core.db.models import KnowledgeChunks, KnowledgeDocuments
+from core.service.vector_index import rebuild_user_faiss_index, search_user_faiss_index
 
 # 简单分词：中英文数字都保留
 LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -308,6 +309,193 @@ def load_user_chunks(
 
     return chunks
 
+def load_chunks_by_ids(
+    db: Session,
+    *,
+    user_id: int,
+    chunk_ids: Sequence[int],
+) -> list[RetrievedChunk]:
+    if not chunk_ids:
+        return []
+
+    rows = (
+        db.query(
+            KnowledgeChunks.id.label("chunk_id"),
+            KnowledgeChunks.document_id,
+            KnowledgeChunks.chunk_index,
+            KnowledgeChunks.content,
+            KnowledgeChunks.source_page,
+            KnowledgeChunks.source_section,
+            KnowledgeChunks.embedding_json,
+            KnowledgeDocuments.name.label("document_name"),
+        )
+        .join(KnowledgeDocuments, KnowledgeDocuments.id == KnowledgeChunks.document_id)
+        .filter(
+            KnowledgeChunks.user_id == user_id,
+            KnowledgeDocuments.user_id == user_id,
+            KnowledgeChunks.id.in_(list(chunk_ids)),
+        )
+        .all()
+    )
+
+    chunk_map: dict[int, RetrievedChunk] = {}
+    for row in rows:
+        chunk_map[int(row.chunk_id)] = RetrievedChunk(
+            document_id=row.document_id,
+            document_name=row.document_name,
+            chunk_id=row.chunk_id,
+            chunk_index=row.chunk_index,
+            content=row.content,
+            source_page=row.source_page,
+            source_section=row.source_section or "",
+            embedding_json=row.embedding_json or "",
+        )
+
+    return [chunk_map[int(chunk_id)] for chunk_id in chunk_ids if int(chunk_id) in chunk_map]
+
+
+def _score_retrieved_chunks(
+    query_text: str | None,
+    chunks: Sequence[RetrievedChunk],
+    *,
+    top_k: int,
+) -> list[RetrievedChunk]:
+    scored: list[tuple[float, RetrievedChunk]] = []
+
+    for chunk in chunks:
+        if chunk.vector_score <= 0:
+            continue
+
+        recall_score = coarse_recall_score(query_text, chunk.content, chunk.vector_score)
+        scored.append(
+            (
+                recall_score,
+                RetrievedChunk(
+                    document_id=chunk.document_id,
+                    document_name=chunk.document_name,
+                    chunk_id=chunk.chunk_id,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    source_page=chunk.source_page,
+                    source_section=chunk.source_section,
+                    embedding_json=chunk.embedding_json,
+                    vector_score=chunk.vector_score,
+                ),
+            )
+        )
+
+    scored.sort(
+        key=lambda item: (item[0], item[1].vector_score, item[1].chunk_index),
+        reverse=True,
+    )
+    return [item[1] for item in scored[:top_k]]
+
+
+def _search_similar_chunks_by_bruteforce(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float],
+    query_text: str | None = None,
+    document_ids: Sequence[int] | None = None,
+    top_k: int = 10,
+) -> list[RetrievedChunk]:
+    candidates = load_user_chunks(db, user_id=user_id, document_ids=document_ids)
+
+    scored_candidates: list[RetrievedChunk] = []
+    for chunk in candidates:
+        chunk_embedding = parse_embedding(chunk.embedding_json)
+        if not chunk_embedding:
+            continue
+
+        vector_score = cosine_similarity(query_embedding, chunk_embedding)
+        if vector_score <= 0:
+            continue
+
+        scored_candidates.append(
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                vector_score=vector_score,
+            )
+        )
+
+    return _score_retrieved_chunks(query_text, scored_candidates, top_k=top_k)
+
+
+def _search_similar_chunks_by_faiss(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float],
+    query_text: str | None = None,
+    document_ids: Sequence[int] | None = None,
+    top_k: int = 10,
+) -> list[RetrievedChunk] | None:
+    search_hits = search_user_faiss_index(
+        user_id=user_id,
+        query_embedding=query_embedding,
+        top_k=top_k,
+        document_ids=list(document_ids or []),
+    )
+    if search_hits is None:
+        rebuild_user_faiss_index(db, user_id=user_id)
+        search_hits = search_user_faiss_index(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            document_ids=list(document_ids or []),
+        )
+    if search_hits is None:
+        return None
+
+    chunk_ids = [hit.chunk_id for hit in search_hits]
+    if not chunk_ids:
+        return []
+
+    candidates = load_chunks_by_ids(db, user_id=user_id, chunk_ids=chunk_ids)
+    if len(candidates) != len(chunk_ids):
+        rebuild_user_faiss_index(db, user_id=user_id)
+        search_hits = search_user_faiss_index(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            document_ids=list(document_ids or []),
+        )
+        if search_hits is None:
+            return None
+        chunk_ids = [hit.chunk_id for hit in search_hits]
+        candidates = load_chunks_by_ids(db, user_id=user_id, chunk_ids=chunk_ids)
+
+    vector_score_map = {hit.chunk_id: hit.score for hit in search_hits}
+    scored_candidates: list[RetrievedChunk] = []
+    for chunk in candidates:
+        vector_score = float(vector_score_map.get(chunk.chunk_id, 0.0))
+        if vector_score <= 0:
+            continue
+
+        scored_candidates.append(
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                vector_score=vector_score,
+            )
+        )
+
+    return _score_retrieved_chunks(query_text, scored_candidates, top_k=top_k)
+
 
 # 用户查询 → 生成 query_embedding
 #                 ↓
@@ -326,54 +514,37 @@ def search_similar_chunks_by_embedding(
     db: Session,
     *,
     user_id: int,
-    # 查询向量（将用户问题转成的数字列表）
+    # 鏌ヨ鍚戦噺锛堝皢鐢ㄦ埛闂杞垚鐨勬暟瀛楀垪琛級
     query_embedding: list[float],
     query_text: str | None = None,
-    # 可选：限定搜索哪些文档
+    # 鍙€夛細闄愬畾鎼滅储鍝簺鏂囨。
     document_ids: Sequence[int] | None = None,
-    # 最多返回几条结果
+    # 鏈€澶氳繑鍥炲嚑鏉＄粨鏋?
     top_k: int = 10,
-    # 相似度阈值（低于此值的结果被过滤）
+    # 鐩镐技搴﹂槇鍊硷紙浣庝簬姝ゅ€肩殑缁撴灉琚繃婊わ級
     threshold: float = 0.5,
-        # 是否对结果重新排序（提高精度）
+        # 鏄惁瀵圭粨鏋滈噸鏂版帓搴忥紙鎻愰珮绮惧害锛?
     rerank: bool = True,
 ) -> list[RetrievedChunk]:
-    # 先粗检索：向量相似度
-    candidates = load_user_chunks(db, user_id=user_id, document_ids=document_ids)
-
-    scored: list[tuple[float, RetrievedChunk]] = []
-    for chunk in candidates:
-        chunk_embedding = parse_embedding(chunk.embedding_json)
-        if not chunk_embedding:
-            continue
-
-        vector_score = cosine_similarity(query_embedding, chunk_embedding)
-        if vector_score <= 0:
-            continue
-
-        recall_score = coarse_recall_score(query_text, chunk.content, vector_score)
-        scored.append(
-            (
-                recall_score,
-                RetrievedChunk(
-                    document_id=chunk.document_id,
-                    document_name=chunk.document_name,
-                    chunk_id=chunk.chunk_id,
-                    chunk_index=chunk.chunk_index,
-                    content=chunk.content,
-                    source_page=chunk.source_page,
-                    source_section=chunk.source_section,
-                    embedding_json=chunk.embedding_json,
-                    vector_score=vector_score,
-                ),
-            )
-        )
-
-    scored.sort(
-        key=lambda item: (item[0], item[1].vector_score, item[1].chunk_index),
-        reverse=True,
+    faiss_results = _search_similar_chunks_by_faiss(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
     )
-    return [item[1] for item in scored[:top_k]]
+    if faiss_results is not None:
+        return faiss_results
+
+    return _search_similar_chunks_by_bruteforce(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+    )
 
 # 用户查询 "如何用Python处理PDF"
 #         │
