@@ -2,6 +2,9 @@
 **/node_modules
 **/dist
 
+.venv
+**/tmp
+
 **/target
 **/.flattened-pom.xml
 
@@ -36,3 +39,5 @@ package-lock.json
 .codegraph/
 /js
 .tmp/
+
+/tmp/faiss_indexes/
