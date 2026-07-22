@@ -12,6 +12,7 @@ from core.service.rag import build_citations, build_rag_messages, build_context,
 from core.service.rag_trace import fail_rag_step, fail_rag_run, complete_rag_run, create_rag_step, complete_rag_step, \
     create_rag_run
 from core.service.retrieval import rerank_chunks, search_similar_chunks_by_embedding
+from core.service.rag_grounding import build_direct_grounded_answer
 
 router = APIRouter()
 
@@ -176,14 +177,14 @@ async def ask_knowledge(
         # 按向量相似度从数据库中检索相似文本块
         # 参数说明：
         #   - user_id=user.id: 用户数据隔离，仅检索该用户可见的知识库
-        #   - top_k=max(...): 放大召回数量（例如 top_k*3），为 rerank 提供候选池
+        #   - top_k=max(...): 放大召回数量（例如 top_k*5），为 rerank 提供候选池
         #   - document_ids or None: 若客户端传入了文档范围，则仅在范围内检索
         vector_hits = search_similar_chunks_by_embedding(
             db,
             user_id=user.id,
             query_embedding=query_embedding,   # 用户问题的向量表示（已提前通过 embed_text() 生成）
             query_text=question,                # 用户问题的文本表示（用于后续精排）
-            top_k=max(payload.top_k * 3, payload.top_k),     #放大召回数量：返回 top_k × 3 条候选（至少不小于原 top_k）
+            top_k=max(payload.top_k * 5, payload.top_k),     #放大召回数量：返回 top_k × 5 条候选（至少不小于原 top_k）
             document_ids=payload.document_ids or None,       # 若客户端传入了文档范围，则仅在范围内检索
         )
 
@@ -271,7 +272,10 @@ async def ask_knowledge(
         step_llm_id = step_llm.id
 
         # 分支判断：有上下文 OR 处于宽松模式 → 调用 LLM 生成回答
-        if context or not payload.strict_mode:
+        direct_grounded_answer = build_direct_grounded_answer(question, context)
+        if direct_grounded_answer and payload.strict_mode:
+            answer_text = direct_grounded_answer
+        elif context or not payload.strict_mode:
             # 异步调用 LLM Chat Completion 接口
             #   - model: 使用系统默认模型（可由配置切换）
             #   - messages: 包含系统提示、上下文、用户问题的完整消息列表

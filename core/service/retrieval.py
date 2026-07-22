@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from core.db.models import KnowledgeChunks, KnowledgeDocuments
 from core.service.vector_index import rebuild_user_faiss_index, search_user_faiss_index
+from core.service.rag_grounding import evidence_match_score
 
 # 简单分词：中英文数字都保留
 LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -114,25 +115,61 @@ def tokenize(text: str) -> set[str]:
     return tokens
 
 
-def phrase_overlap_score(query_text: str, chunk_text: str) -> float:
-    query_text = re.sub(r"\s+", "", (query_text or "").lower())
-    chunk_text = re.sub(r"\s+", "", (chunk_text or "").lower())
-    if not query_text or not chunk_text:
-        return 0.0
+def _phrase_terms(text: str) -> set[str]:
+    terms: set[str] = set(LATIN_TOKEN_RE.findall(text))
+    for token in CJK_TOKEN_RE.findall(text):
+        terms.update(_generate_cjk_ngrams(token, min_size=2, max_size=6))
+    return {term for term in terms if len(term) >= 2}
 
-    if query_text in chunk_text:
+
+def _phrase_query_forms(normalized_query: str) -> list[str]:
+    forms = [normalized_query]
+    for anchor_text in QUERY_FOCUS_ANCHORS:
+        anchor_index = normalized_query.find(anchor_text)
+        if anchor_index > 0:
+            focused_query = normalized_query[anchor_index:]
+            if len(focused_query) >= max(len(anchor_text) + 2, 4):
+                forms.append(focused_query)
+            break
+    return forms
+
+
+def _evidence_score(query_text: str | None, chunk_text: str) -> float:
+    return evidence_match_score(query_text or "", chunk_text)
+
+
+def _phrase_overlap_once(normalized_query: str, normalized_chunk: str) -> float:
+    if normalized_query in normalized_chunk:
         return 1.0
 
-    query_terms: set[str] = set(LATIN_TOKEN_RE.findall(query_text))
-    for token in CJK_TOKEN_RE.findall(query_text):
-        query_terms.update(_generate_cjk_ngrams(token, min_size=2, max_size=6))
-
-    meaningful_terms = {term for term in query_terms if len(term) >= 2}
-    if not meaningful_terms:
+    query_terms = _phrase_terms(normalized_query)
+    if not query_terms:
         return 0.0
 
-    matched_terms = {term for term in meaningful_terms if term in chunk_text}
-    return len(matched_terms) / len(meaningful_terms)
+    query_to_chunk_match = len({term for term in query_terms if term in normalized_chunk}) / len(query_terms)
+
+    chunk_terms = _phrase_terms(normalized_chunk)
+    if not chunk_terms:
+        return query_to_chunk_match
+
+    # For yes/no entity questions, the answer chunk may contain the entity while
+    # the full question contains extra words such as "support" or "does it".
+    entity_terms = {term for term in chunk_terms if term in normalized_query}
+    chunk_to_query_match = len(entity_terms) / len(chunk_terms)
+
+    return max(query_to_chunk_match, chunk_to_query_match * 0.8)
+
+
+def phrase_overlap_score(query_text: str, chunk_text: str) -> float:
+    normalized_query = re.sub(r"\s+", "", (query_text or "").lower())
+    normalized_chunk = re.sub(r"\s+", "", (chunk_text or "").lower())
+    if not normalized_query or not normalized_chunk:
+        return 0.0
+
+    return max(
+        _phrase_overlap_once(query_form, normalized_chunk)
+        for query_form in _phrase_query_forms(normalized_query)
+    )
 
 
 
@@ -241,7 +278,9 @@ def coarse_recall_score(query_text: str | None, chunk_text: str, vector_score: f
     # 最终分数 = 向量相似度 + 主查询奖励 + 扩展查询奖励
     #          = vector_score + (keyword×0.03 + phrase×0.05) + max(keyword×0.22 + phrase×0.30)
 
-    return round(vector_score + primary_bonus + focused_bonus, 6)
+    evidence_bonus = _evidence_score(query_text, chunk_text) * 0.45
+
+    return round(vector_score + primary_bonus + focused_bonus + evidence_bonus, 6)
 
 def keyword_overlap_score(query_text: str, chunk_text: str) -> float:
     # 关键词重合度，作为 rerank 的补充信号
@@ -514,37 +553,59 @@ def search_similar_chunks_by_embedding(
     db: Session,
     *,
     user_id: int,
-    # 鏌ヨ鍚戦噺锛堝皢鐢ㄦ埛闂杞垚鐨勬暟瀛楀垪琛級
+    # 查询向量（将用户问题转为的数字列表）
     query_embedding: list[float],
     query_text: str | None = None,
-    # 鍙€夛細闄愬畾鎼滅储鍝簺鏂囨。
+    # 可选：限定搜索哪些文档
     document_ids: Sequence[int] | None = None,
-    # 鏈€澶氳繑鍥炲嚑鏉＄粨鏋?
+    # 最多返回多少条结果
     top_k: int = 10,
-    # 鐩镐技搴﹂槇鍊硷紙浣庝簬姝ゅ€肩殑缁撴灉琚繃婊わ級
+    # 相似度阈值（低于此值的结果被过滤）
     threshold: float = 0.5,
-        # 鏄惁瀵圭粨鏋滈噸鏂版帓搴忥紙鎻愰珮绮惧害锛?
+    # 是否对结果重新排序（提高精度）
     rerank: bool = True,
 ) -> list[RetrievedChunk]:
+    # ========== 阶段1：FAISS向量检索 ==========
+    # 扩大检索范围（取top_k的2倍），给后续精排更多候选
     faiss_results = _search_similar_chunks_by_faiss(
         db,
         user_id=user_id,
         query_embedding=query_embedding,
         query_text=query_text,
         document_ids=document_ids,
-        top_k=top_k,
+        top_k=top_k * 2,  # 扩大范围：确保有足够候选
     )
-    if faiss_results is not None:
-        return faiss_results
-
-    return _search_similar_chunks_by_bruteforce(
-        db,
-        user_id=user_id,
-        query_embedding=query_embedding,
-        query_text=query_text,
-        document_ids=document_ids,
-        top_k=top_k,
-    )
+    
+    # ========== 阶段2：关键词匹配检查（降级兜底机制） ==========
+    # 问题场景：FAISS向量检索可能失败（如"支持小爱同学吗"与"常见的有小爱同学"向量相似度低）
+    # 解决方案：检查FAISS结果是否包含关键词匹配，若无则降级到暴力检索
+    has_keyword_match = False
+    if faiss_results and query_text:
+        # 提取用户问题中的关键词
+        query_tokens = tokenize(query_text)
+        # 检查每个FAISS返回的chunk是否包含关键词
+        for chunk in faiss_results:
+            chunk_tokens = tokenize(chunk.content)
+            # 如果有任何关键词重叠，说明匹配成功
+            if query_tokens & chunk_tokens:
+                has_keyword_match = True
+                break
+    
+    # ========== 阶段3：决定返回策略 ==========
+    # 条件：FAISS结果为空 或 没有关键词匹配 → 降级到暴力检索
+    # 原因：暴力检索虽然慢，但能确保找到包含关键词的chunk
+    if faiss_results is None or not faiss_results or not has_keyword_match:
+        return _search_similar_chunks_by_bruteforce(
+            db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            query_text=query_text,
+            document_ids=document_ids,
+            top_k=top_k,
+        )
+    
+    # FAISS结果有效且有关键词匹配 → 返回FAISS结果
+    return faiss_results
 
 # 用户查询 "如何用Python处理PDF"
 #         │
@@ -575,6 +636,7 @@ def rerank_chunks(
         phrase_score = max(phrase_overlap_score(form, chunk.content) for form in focused_forms)
         primary_keyword_score = keyword_overlap_score(primary_form, chunk.content)
         primary_phrase_score = phrase_overlap_score(primary_form, chunk.content)
+        evidence_score = _evidence_score(query_text, chunk.content)
         # Blend semantic recall with a stronger focus on the question tail.
         # For prefixed queries like "?????????????",
         # the focused tail should outrank generic product mentions.
@@ -583,7 +645,8 @@ def rerank_chunks(
             + (primary_keyword_score * 0.04)
             + (primary_phrase_score * 0.04)
             + (keyword_score * 0.22)
-            + (phrase_score * 0.28),
+            + (phrase_score * 0.28)
+            + (evidence_score * 0.35),
             6,
         )
 

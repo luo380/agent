@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 from core.service.embedding import embed_text
 from core.service.llm import get_llm_client, get_default_model, get_default_temperature
 from core.service.retrieval import RetrievedChunk, search_similar_chunks_by_embedding, rerank_chunks
+from core.service.rag_grounding import GROUNDING_INSTRUCTION, build_direct_grounded_answer
 
 
 # 构建上下文
@@ -166,6 +167,7 @@ def build_rag_messages(question: str, context: str, strict_mode: bool) -> list[d
     if has_context:
         answer_instruction = (
             "请先基于知识库给出简洁回答，并在确实引用到知识库内容时使用 [1]、[2] 这类来源编号。"
+            f" {GROUNDING_INSTRUCTION}"
         )
         context_block = context
     else:
@@ -264,7 +266,7 @@ async def answer_with_knowledge(
 
     # 步骤 3：向量检索（粗检索）
     # 根据向量相似度，从数据库中找出最相关的文本块
-    # top_k=max(top_k * 3, top_k)：先检索 3 倍数量（想要 5 条就先查 15 条）
+    # top_k=max(top_k * 5, top_k)：先检索 5 倍数量（想要 5 条就先查 25 条）
     #   目的：给后面的精排（rerank）更多候选，提高最终准确性
     #   max(..., top_k) 是防御性代码，防止 top_k=0 时出问题
     vector_hits = search_similar_chunks_by_embedding(
@@ -272,7 +274,7 @@ async def answer_with_knowledge(
         user_id=user_id,
         query_embedding=query_embedding,
         query_text=question,
-        top_k=max(top_k * 3, top_k),
+        top_k=max(top_k * 5, top_k),
         document_ids=document_ids,
     )
 
@@ -303,7 +305,10 @@ async def answer_with_knowledge(
     # 这样设计的目的：
     #   - 严格模式下，如果知识库没相关资料，直接告诉用户"找不到"，不让 AI 瞎编
     #   - 宽松模式下，即使没资料，也允许 AI 根据自身知识回答（质量可能不稳）
-    if context or not strict_mode:
+    direct_grounded_answer = build_direct_grounded_answer(question, context)
+    if direct_grounded_answer and strict_mode:
+        answer_text = direct_grounded_answer
+    elif context or not strict_mode:
         # 调用大模型生成回答
         # await client.chat.completions.create() 是 OpenAI Python SDK 的标准异步调用
         # model=get_default_model(): 使用项目配置的默认模型（如 gpt-4o-mini）

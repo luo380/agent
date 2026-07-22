@@ -18,6 +18,7 @@ from core.service.langchain_adapters import (
 )
 from core.service.llm import get_default_model, get_default_temperature, get_llm_client
 from core.service.retrieval import RetrievedChunk
+from core.service.rag_grounding import GROUNDING_INSTRUCTION, build_direct_grounded_answer
 
 
 """
@@ -315,6 +316,7 @@ def build_answer_instruction(context: str, strict_mode: bool) -> str:
         return (
             "请先基于知识库给出简洁回答，"
             "并在确实引用到知识库内容时使用 [1]、[2] 这类来源编号。"
+            f" {GROUNDING_INSTRUCTION}"
         )
 
     if strict_mode:
@@ -362,7 +364,7 @@ def build_langchain_retriever(
     top_k: int = 5,
     document_ids: Sequence[int] | None = None,
     client: AsyncOpenAI | None = None,
-    candidate_multiplier: int = 3,
+    candidate_multiplier: int = 5,
 ) -> ProjectKnowledgeRetriever:
     """
     构建项目里的 LangChain Retriever。
@@ -586,6 +588,22 @@ async def stream_answer_with_knowledge_langchain_native(
     if not context and strict_mode:
         answer_text = "知识库中没有找到相关内容。请尝试调整提问方式，或缩小/更换文档范围后再试。"
         answer_text = ensure_answer_has_document_citations(answer_text, documents)
+        yield {
+            "event": "done",
+            "data": {
+                "answer": answer_text,
+                "strict_mode": strict_mode,
+                "citations": citations,
+                "retrieved_chunks": retrieved_chunk_payloads,
+                "context": context,
+                "query_embedding_dim": retriever.last_query_embedding_dim,
+            },
+        }
+        return
+
+    direct_grounded_answer = build_direct_grounded_answer(question, context)
+    if direct_grounded_answer and strict_mode:
+        answer_text = ensure_answer_has_document_citations(direct_grounded_answer, documents)
         yield {
             "event": "done",
             "data": {

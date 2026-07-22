@@ -523,7 +523,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
     db: Any = Field(exclude=True)
     user_id: int
     top_k: int = 5
-    candidate_multiplier: int = 3
+    candidate_multiplier: int = 5
     document_ids: list[int] | None = None
     embeddings: Any = Field(default_factory=ProjectEmbeddings, exclude=True)
 
