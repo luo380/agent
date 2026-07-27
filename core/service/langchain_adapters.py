@@ -16,8 +16,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from core.service.chunking import chunk_parsed_document, chunk_text
 from core.service.document_parser import parse_document
 from core.service.embedding import embed_text, embed_texts
-from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar_chunks_by_embedding
-
+from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar_chunks
 
 """
 阶段 5：把第 4 阶段手写 RAG 包装成 LangChain 抽象。
@@ -26,7 +25,7 @@ from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar
 - 解析文件仍然复用 parse_document(...)
 - 文本切块仍然复用 chunk_parsed_document(...) / chunk_text(...)
 - 向量生成仍然复用 embed_text(...) / embed_texts(...)
-- 向量召回和精排仍然复用 search_similar_chunks_by_embedding(...) / rerank_chunks(...)
+- 向量召回和精排仍然复用 search_similar_chunks(...) / rerank_chunks(...)
 
 最终目标是让你能在代码里看到岗位 JD 常写的 LangChain 关键词：
 - Document Loader
@@ -87,7 +86,7 @@ ProjectEmbeddings.aembed_query(question)
 embed_text(question)
   |
   v
-search_similar_chunks_by_embedding(...)
+search_similar_chunks(...)
   |
   v
 rerank_chunks(...)
@@ -479,7 +478,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
 
     内部仍然是你自己的逻辑：
     1. embed_text(question) 生成问题向量
-    2. search_similar_chunks_by_embedding(...) 做向量召回
+    2. search_similar_chunks(...) 做向量召回
     3. rerank_chunks(...) 做加权精排
     4. retrieved_chunks_to_langchain_documents(...) 转成 LangChain Document
 
@@ -500,7 +499,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
     query_embedding
       |
       v
-    search_similar_chunks_by_embedding(...)
+    search_similar_chunks(...)
       |
       v
     vector_hits
@@ -579,7 +578,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
         query_embedding
           |
           v
-        search_similar_chunks_by_embedding(...)
+        search_similar_chunks(...)
           |
           v
         vector_hits
@@ -595,7 +594,7 @@ class ProjectKnowledgeRetriever(BaseRetriever):
         """
         recall_top_k = max(self.top_k * max(self.candidate_multiplier, 1), self.top_k)
 
-        vector_hits = search_similar_chunks_by_embedding(
+        vector_hits = search_similar_chunks(
             self.db,
             user_id=self.user_id,
             query_embedding=query_embedding,

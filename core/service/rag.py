@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 
 from core.service.embedding import embed_text
 from core.service.llm import get_llm_client, get_default_model, get_default_temperature
-from core.service.retrieval import RetrievedChunk, search_similar_chunks_by_embedding, rerank_chunks
+from core.service.retrieval import RetrievedChunk, search_similar_chunks, rerank_chunks
 from core.service.rag_grounding import GROUNDING_INSTRUCTION, build_direct_grounded_answer
 
 
@@ -269,7 +269,7 @@ async def answer_with_knowledge(
     # top_k=max(top_k * 5, top_k)：先检索 5 倍数量（想要 5 条就先查 25 条）
     #   目的：给后面的精排（rerank）更多候选，提高最终准确性
     #   max(..., top_k) 是防御性代码，防止 top_k=0 时出问题
-    vector_hits = search_similar_chunks_by_embedding(
+    candidate_hits = search_similar_chunks(
         db,
         user_id=user_id,
         query_embedding=query_embedding,
@@ -283,8 +283,7 @@ async def answer_with_knowledge(
     # 关键词重合度看"字面有没有重复词"
     # rerank_chunks 把两者结合，重新排序，挑出最相关的 top_k 条
     # 精排可以显著提高检索质量，避免"语义像但关键词不搭"的错误结果
-    reranked_hits = rerank_chunks(question, vector_hits, top_k=top_k)
-
+    reranked_hits = rerank_chunks(question, candidate_hits, top_k=top_k)
     # 步骤 5：拼上下文（给大模型看的参考资料文本）
     # 把精排后的文本块拼成格式化文本（带 [1] [2] 编号和来源信息）
     # 格式示例：

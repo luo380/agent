@@ -2,7 +2,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-
+from collections import Counter
 from sqlalchemy import Sequence
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,16 @@ from core.db.models import KnowledgeChunks, KnowledgeDocuments
 from core.service.vector_index import rebuild_user_faiss_index, search_user_faiss_index
 from core.service.rag_grounding import evidence_match_score
 
+
+"""
+它是 RAG 的“检索中间层”负责把“用户问题”变成“可用的知识块候选”，不负责生成答案。
+简单说它做这几件事：
+读知识库 chunk 和 embedding
+做向量召回 / 关键词召回 / 混合召回
+计算分数、去重、重排
+返回 RetrievedChunk 给 rag.py 去拼上下文
+所以它的位置是：embed_text 之后，LLM 之前
+"""
 # 简单分词：中英文数字都保留
 LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 CJK_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]+")
@@ -113,6 +123,344 @@ def tokenize(text: str) -> set[str]:
         tokens.update(_generate_cjk_ngrams(clean_token))
 
     return tokens
+
+
+#
+def _tokenize_for_bm25(text: str) -> list[str]:
+    # 先转换为小写
+    normalized_text  = (text or "").lower()
+    # 声明变量名字为tokens 他的数据类型是list数组，值为空列表
+    tokens: list[str] = []
+    tokens.extend(token for token in LATIN_TOKEN_RE.findall(normalized_text) if token)
+    for token in CJK_TOKEN_RE.findall(normalized_text):
+        clean_token = token.strip()
+        if not clean_token:
+            continue
+        tokens.append(clean_token)
+        tokens.extend(sorted(_generate_cjk_ngrams(clean_token)))
+
+    return tokens
+
+
+# 归一化得分映射
+def _normalize_score_map(score_map: dict[int, float]) -> dict[int, float]:
+    if not score_map:
+        return score_map
+
+    max_score = max(score_map.values())
+    if max_score <= 0:
+        return {key: 0.0 for key in score_map}
+
+    return {
+        key: round(value / max_score, 6)
+        for key, value in score_map.items()
+    }
+
+
+def bm25_search(
+    db: Session,
+    *,
+    user_id: int,
+    query_text: str,
+    document_ids: Sequence[int] | None = None,
+    top_k: int = 10,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[RetrievedChunk]:
+
+    candidates = load_user_chunks(db, user_id=user_id, document_ids=document_ids)
+    #dict.fromkeys 是去重并且按照原顺序返回的列表方法
+    query_tokens = list(dict.fromkeys(_tokenize_for_bm25(query_text)))
+    if not candidates or not query_tokens:
+        return []
+
+    """"
+    list[tuple[RetrievedChunk, list[str], Counter[str]]]
+     ↑      ↑               ↑            ↑
+     │      │               │            └── 词频统计（每个词出现多少次）
+     │      │               └─────────────── 分词后的 token 列表
+     │      └─────────────────────────────── 文档块对象
+     └────────────────────────────────────── 外层是一个列表
+    """
+    prepared_docs: list[tuple[RetrievedChunk, list[str], Counter[str]]] = []
+    doc_freq: Counter[str] = Counter()
+    total_doc_len = 0
+
+    for chunk in candidates:
+        doc_tokens = _tokenize_for_bm25(chunk.content)
+        if not doc_tokens:
+            continue
+
+        tf_counter = Counter(doc_tokens)
+        prepared_docs.append((chunk, doc_tokens, tf_counter))
+        total_doc_len += len(doc_tokens)
+        doc_freq.update(set(doc_tokens))
+
+    if not prepared_docs:
+        return []
+
+    total_docs = len(prepared_docs)
+    avg_doc_len = total_doc_len / total_docs if total_docs else 0.0
+    if avg_doc_len <= 0:
+        return []
+
+    results: list[RetrievedChunk] = []
+
+
+    for chunk, doc_tokens, tf_counter in prepared_docs:
+        doc_len = len(doc_tokens)
+        score = 0.0
+
+        for term in query_tokens:
+            tf = tf_counter.get(term, 0)
+            if tf <= 0:
+                continue
+
+            df = doc_freq.get(term, 0)
+            idf = math.log(1 + ((total_docs - df + 0.5) / (df + 0.5)))
+            denom = tf + k1 * (1 - b + b * (doc_len / avg_doc_len))
+            score += idf * ((tf * (k1 + 1)) / denom)
+
+        if score <= 0:
+            continue
+
+
+        results.append(
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                keyword_score=round(score, 6),
+            )
+        )
+    results.sort(
+        key=lambda item: (item.keyword_score, item.chunk_index),
+        reverse=True,
+    )
+    return results[:top_k]
+
+
+# ============================================================
+# 混合搜索 (Hybrid Search)
+# 将 FAISS 向量检索（语义相似度）与 BM25 关键词检索（符号匹配）
+# 进行加权融合，兼顾"含义相近"和"关键词命中"，获得更好的检索效果
+# ============================================================
+def hybrid_search(
+    db: Session,                    # 数据库会话
+    *,
+    user_id: int,                   # 用户 ID（用于数据隔离）
+    query_text: str,                # 用户原始查询文本（用于 BM25 关键词匹配）
+    query_embedding: list[float],   # 查询文本的 embedding 向量（用于 FAISS 语义检索）
+    document_ids: Sequence[int] | None = None,  # 可选：限定搜索范围为指定文档
+    top_k: int = 10,                # 返回结果数量
+    vector_weight: float = 0.65,    # 向量相似度权重（默认 65%，侧重语义匹配）
+    bm25_weight: float = 0.35,      # BM25 关键词权重（默认 35%，补充精确匹配）
+) -> list[RetrievedChunk]:
+
+    # ========== 阶段 1：FAISS 向量检索（语义召回） ==========
+    # 优先使用 FAISS 近似最近邻索引做快速向量检索（O(log N)）
+    vector_hits = _search_similar_chunks_by_faiss(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+    )
+
+    # FAISS 索引不可用时（如首次使用、索引损坏），降级到暴力搜索
+    # 暴力搜索逐个计算余弦相似度（O(N)），速度慢但保证服务可用
+    if vector_hits is None:
+        vector_hits = _search_similar_chunks_by_bruteforce(
+            db,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            query_text=query_text,
+            document_ids=document_ids,
+            top_k=top_k,
+        )
+
+    # ========== 阶段 2：BM25 关键词检索（符号召回） ==========
+    # 用经典 BM25 算法计算关键词匹配得分，互补向量检索的盲点
+    bm25_hits = bm25_search(
+        db,
+        user_id=user_id,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+    )
+
+    """
+    用户查询
+   │
+   ├── FAISS → vector_score_map {chunk_id: [0~N]}  ← 范围不确定
+   │                                      ↓
+   │                                _normalize_score_map()  ← 归一化
+   │                                      ↓
+   │                            vector_norm_map {chunk_id: [0~1]}
+   │
+   └── BM25  → keyword_score_map {chunk_id: [0~N]}  ← 范围不同
+                                          ↓
+                                    _normalize_score_map()  ← 归一化
+                                          ↓
+                                    bm25_norm_map {chunk_id: [0~1]}
+                                          │
+                                          ↓
+                    final_score = 0.65 * v_norm + 0.35 * b_norm
+                                          ↓
+                                    排序，返回前 top_k
+    """
+
+    # ========== 阶段 3：分数提取与归一化 ==========
+
+    # 步骤 A：分别提取两种搜索结果的 {chunk_id: 原始分数} 映射
+    #   - vector_score: FAISS 返回的余弦相似度
+    #   - keyword_score: BM25 计算的关键词匹配分数
+    vector_score_map = {chunk.chunk_id: float(chunk.vector_score) for chunk in vector_hits}
+    bm25_score_map = {chunk.chunk_id: float(chunk.keyword_score) for chunk in bm25_hits}
+
+    # 步骤 B：分别归一化到 [0, 1] 范围（除以各自系列的最高分）
+    # 这一步至关重要！因为：
+    #   - vector_score 范围约 [0, 1]（余弦相似度）
+    #   - bm25 分数范围不确定，取决于文档集大小和词频分布
+    # 如果不归一化，数值较大的一方会"压制"另一方
+    vector_norm_map = _normalize_score_map(vector_score_map)
+    bm25_norm_map = _normalize_score_map(bm25_score_map)
+
+    # ========== 阶段 4：合并两种检索结果（按 chunk_id 去重） ==========
+    # 用字典 merged_map 去重：
+    #   - 先把 vector_hits 的结果加入（vector 优先，被保留）
+    #   - 再用 setdefault 把 bm25_hits 的结果加入（只补全未出现的 chunk）
+    merged_map: dict[int, RetrievedChunk] = {}
+    for chunk in vector_hits:
+        merged_map[chunk.chunk_id] = chunk           # vector 结果优先
+    for chunk in bm25_hits:
+        merged_map.setdefault(chunk.chunk_id, chunk)  # 只添加未出现过的
+
+    # ========== 阶段 5：加权融合 + 构造最终结果 ==========
+    # 对每篇文档计算加权融合分数：
+    #   final_score = w_v * v_norm + w_b * b_norm
+    merged: list[RetrievedChunk] = []
+
+    for chunk_id, chunk in merged_map.items():
+        # 获取归一化后的两种分数（如果某一路未命中，则用 0.0）
+        normalized_vector_score = vector_norm_map.get(chunk_id, 0.0)
+        normalized_bm25_score = bm25_norm_map.get(chunk_id, 0.0)
+
+        # 加权融合（保留 6 位小数）
+        hybrid_score = round(
+            (normalized_vector_score * vector_weight)
+            + (normalized_bm25_score * bm25_weight),
+            6,
+        )
+
+        # 过滤掉分数为 0 的结果（两路都未命中）
+        if hybrid_score <= 0:
+            continue
+
+        # 构造最终结果对象（附带三种分数字段）
+        merged.append(
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                vector_score=normalized_vector_score,  # 归一化后的向量分
+                keyword_score=normalized_bm25_score,   # 归一化后的关键词分
+                final_score=hybrid_score,              # 加权融合后的总分
+            )
+        )
+
+    # ========== 阶段 6：多级排序 + 返回前 top_k ==========
+    # 排序优先级（从高到低）：
+    #   1. final_score（加权融合总分）→ 主排序键
+    #   2. vector_score（向量相似度）→ 第一 tie-breaker
+    #   3. keyword_score（关键词匹配）→ 第二 tie-breaker
+    #   4. -chunk_index（文档块序号越大越靠前）→ 第三 tie-breaker
+    merged.sort(
+        key=lambda item: (
+            item.final_score,
+            item.vector_score,
+            item.keyword_score,
+            -item.chunk_index,
+        ),
+        reverse=True,  # 降序排列
+    )
+    return merged[:top_k]  # 只返回前 top_k 个结果
+
+
+
+def  search_similar_chunks(
+        db:Session,
+        *,
+        user_id: int,
+        query_embedding: list[float],
+        query_text: str | None = None,
+        document_ids: Sequence[int] | None = None,
+        top_k: int = 10,
+        threshold: float = 0.5,
+        rerank: bool = True,
+) -> list[RetrievedChunk]:
+    # 如果 query_text 非空，则优先使用混合检索（hybrid_search）
+    if query_text and query_text.strip():
+        return hybrid_search(
+            db,
+            user_id=user_id,
+            query_text=query_text,
+            query_embedding=query_embedding,
+            document_ids=document_ids,
+            top_k=top_k,
+        )
+    faiss_results = _search_similar_chunks_by_faiss(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+    )
+    if faiss_results is not None:
+        return faiss_results
+    return _search_similar_chunks_by_bruteforce(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+    )
+
+
+def search_similar_chunks_by_embedding(
+    db: Session,
+    *,
+    user_id: int,
+    query_embedding: list[float],
+    query_text: str | None = None,
+    document_ids: Sequence[int] | None = None,
+    top_k: int = 10,
+    threshold: float = 0.5,
+    rerank: bool = True,
+) -> list[RetrievedChunk]:
+    return search_similar_chunks(
+        db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query_text=query_text,
+        document_ids=document_ids,
+        top_k=top_k,
+        threshold=threshold,
+        rerank=rerank,
+    )
 
 
 def _phrase_terms(text: str) -> set[str]:
@@ -468,6 +816,8 @@ def _search_similar_chunks_by_bruteforce(
     return _score_retrieved_chunks(query_text, scored_candidates, top_k=top_k)
 
 
+
+# FAISS 检索函数
 def _search_similar_chunks_by_faiss(
     db: Session,
     *,
@@ -626,12 +976,11 @@ def rerank_chunks(
 ) -> list[RetrievedChunk]:
     # 再精排：向量分 + 关键词重合度
     reranked: list[RetrievedChunk] = []
-
     query_forms = build_recall_query_forms(query_text)
     primary_form = query_forms[0] if query_forms else query_text
     focused_forms = query_forms[1:] or [primary_form]
-
     for chunk in chunks:
+        retrieval_keyword_score = chunk.keyword_score or 0.0
         keyword_score = max(keyword_overlap_score(form, chunk.content) for form in focused_forms)
         phrase_score = max(phrase_overlap_score(form, chunk.content) for form in focused_forms)
         primary_keyword_score = keyword_overlap_score(primary_form, chunk.content)
@@ -641,30 +990,33 @@ def rerank_chunks(
         # For prefixed queries like "?????????????",
         # the focused tail should outrank generic product mentions.
         final_score = round(
-            (chunk.vector_score * 0.42)
+            (chunk.vector_score * 0.35)
+            + (retrieval_keyword_score * 0.12)
             + (primary_keyword_score * 0.04)
             + (primary_phrase_score * 0.04)
-            + (keyword_score * 0.22)
-            + (phrase_score * 0.28)
+            + (keyword_score * 0.18)
+            + (phrase_score * 0.22)
             + (evidence_score * 0.35),
             6,
         )
 
         reranked.append(
-        RetrievedChunk(
-            document_id=chunk.document_id,
-            document_name=chunk.document_name,
-            chunk_id=chunk.chunk_id,
-            chunk_index=chunk.chunk_index,
-            content=chunk.content,
-            source_page=chunk.source_page,
-            source_section=chunk.source_section,
-            embedding_json=chunk.embedding_json,
-            vector_score=chunk.vector_score,
-            keyword_score=keyword_score,
-            final_score=final_score,
-             )
+            RetrievedChunk(
+                document_id=chunk.document_id,
+                document_name=chunk.document_name,
+                chunk_id=chunk.chunk_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                source_page=chunk.source_page,
+                source_section=chunk.source_section,
+                embedding_json=chunk.embedding_json,
+                vector_score=chunk.vector_score,
+                keyword_score=retrieval_keyword_score,
+                final_score=final_score,
             )
+        )
+
+
     reranked.sort(
         key=lambda item: (item.final_score, item.vector_score, item.chunk_index),
         reverse=True,

@@ -11,7 +11,7 @@ from core.service.llm import get_default_temperature, get_default_model, get_llm
 from core.service.rag import build_citations, build_rag_messages, build_context, ensure_answer_has_citations
 from core.service.rag_trace import fail_rag_step, fail_rag_run, complete_rag_run, create_rag_step, complete_rag_step, \
     create_rag_run
-from core.service.retrieval import rerank_chunks, search_similar_chunks_by_embedding
+from core.service.retrieval import rerank_chunks, search_similar_chunks
 from core.service.rag_grounding import build_direct_grounded_answer
 
 router = APIRouter()
@@ -179,7 +179,7 @@ async def ask_knowledge(
         #   - user_id=user.id: 用户数据隔离，仅检索该用户可见的知识库
         #   - top_k=max(...): 放大召回数量（例如 top_k*5），为 rerank 提供候选池
         #   - document_ids or None: 若客户端传入了文档范围，则仅在范围内检索
-        vector_hits = search_similar_chunks_by_embedding(
+        candidate_hits = search_similar_chunks(
             db,
             user_id=user.id,
             query_embedding=query_embedding,   # 用户问题的向量表示（已提前通过 embed_text() 生成）
@@ -192,7 +192,7 @@ async def ask_knowledge(
         complete_rag_step(
             db,
             step_search,
-            output_payload={"candidate_count": len(vector_hits)},
+            output_payload={"candidate_count": len(candidate_hits)},
         )
 
         # =====================================================================
@@ -202,25 +202,25 @@ async def ask_knowledge(
         #       视「问题-候选块」对的语义相关性，给出更准确的相关性得分，并挑出
         #       真正最相关的 top_k 个文本块送给 LLM。
         # =====================================================================
-        step_rerank = create_rag_step(
+        step_search = create_rag_step(
             db,
             rag_run_id=rag_run.id,
-            step_type="rerank_chunks",
-            step_name="Rerank retrieved chunks",
+            step_type="hybrid_search",
+            step_name="Hybrid retrieve chunks",
             input_payload={
-                "candidate_count": len(vector_hits),  # 输入候选数
-                "top_k": payload.top_k,               # 期望最终保留数量
+                "top_k": payload.top_k,
+                "document_ids": payload.document_ids,
             },
         )
-        step_rerank_id = step_rerank.id
+        step_search_id = step_search.id
 
         # 调用 rerank 服务对候选重排序，只保留 top_k 个最相关的文本块
-        reranked_hits = rerank_chunks(question, vector_hits, top_k=payload.top_k)
+        reranked_hits = rerank_chunks(question, candidate_hits, top_k=payload.top_k)
 
         # 重排序成功：记录最终入选的块数量
         complete_rag_step(
             db,
-            step_rerank,
+            step_search,
             output_payload={"selected_count": len(reranked_hits)},
         )
 
