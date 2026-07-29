@@ -68,16 +68,34 @@ def test_get_session_returns_mode_and_source_for_rag_messages(db_session, seeded
             Message(
                 session_id=seeded_chat_context.session.id,
                 role="user",
-                content="question",
+                content="question-1",
                 mode=MESSAGE_MODE_RAG,
                 source=MESSAGE_SOURCE_RAG_ASK,
+                strict_mode=1,
             ),
             Message(
                 session_id=seeded_chat_context.session.id,
                 role="assistant",
-                content="answer",
+                content="answer-1",
                 mode=MESSAGE_MODE_RAG,
                 source=MESSAGE_SOURCE_RAG_ASK,
+                strict_mode=1,
+            ),
+            Message(
+                session_id=seeded_chat_context.session.id,
+                role="user",
+                content="question-2",
+                mode=MESSAGE_MODE_RAG,
+                source=MESSAGE_SOURCE_RAG_ASK,
+                strict_mode=0,
+            ),
+            Message(
+                session_id=seeded_chat_context.session.id,
+                role="assistant",
+                content="answer-2",
+                mode=MESSAGE_MODE_RAG,
+                source=MESSAGE_SOURCE_RAG_ASK,
+                strict_mode=0,
             ),
         ]
     )
@@ -89,5 +107,6 @@ def test_get_session_returns_mode_and_source_for_rag_messages(db_session, seeded
         user=seeded_chat_context.user,
     )
 
-    assert [item.mode for item in result["data"]] == [MESSAGE_MODE_RAG, MESSAGE_MODE_RAG]
-    assert [item.source for item in result["data"]] == [MESSAGE_SOURCE_RAG_ASK, MESSAGE_SOURCE_RAG_ASK]
+    assert [item.mode for item in result["data"]] == [MESSAGE_MODE_RAG] * 4
+    assert [item.source for item in result["data"]] == [MESSAGE_SOURCE_RAG_ASK] * 4
+    assert [item.strict_mode for item in result["data"]] == [True, True, False, False]

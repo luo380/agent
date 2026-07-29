@@ -100,6 +100,7 @@ def test_ask_knowledge_persists_messages_into_session(db_session, seeded_chat_co
     assert [message.role for message in messages] == ["user", "assistant"]
     assert [message.mode for message in messages] == [MESSAGE_MODE_RAG, MESSAGE_MODE_RAG]
     assert [message.source for message in messages] == [MESSAGE_SOURCE_RAG_ASK, MESSAGE_SOURCE_RAG_ASK]
+    assert [message.strict_mode for message in messages] == [1, 1]
     assert messages[0].content == "How should I maintain the robot?"
     assert messages[1].content.startswith("knowledge answer")
     assert "manual.md" in messages[1].content
