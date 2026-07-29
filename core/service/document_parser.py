@@ -27,8 +27,10 @@ try:
     from pptx import Presentation
 except ImportError:  # pragma: no cover
     Presentation = None
+import re
 
-
+# Markdown 标题正则表达式
+MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
 def normalize_text(text: str) -> str:
@@ -90,19 +92,28 @@ def parse_txt(file_path: str) -> dict:
 
 def parse_md(file_path: str) -> dict:
     """
-    解析 Markdown 文件。
+    解析 Markdown。
 
-    这里先做轻量实现：
-    - 直接把 Markdown 作为文本读入
-    - 不额外做标题树解析
-    - 后续如需更细粒度 section，可再按 # / ## 扩展
+    和旧版最大的区别：
+    - 旧版只是把 md 当普通文本
+    - 新版会先抽标题 section
+    这样后面的 chunking 才能真正做到标题感知
     """
-    text = Path(file_path).read_text(encoding="utf-8")
+    raw_text = Path(file_path).read_text(encoding="utf-8")
+    sections = _extract_markdown_sections(raw_text)
+
+    full_text_parts: list[str] = []
+    for item in sections:
+        full_text_parts.append(f"[章节] {item['section']}\n{item['text']}")
+
     return {
-        "full_text": normalize_text(text),
+        "full_text": normalize_text("\n\n".join(full_text_parts)),
         "pages": [],
-        "sections": [],
-        "metadata": {},
+        "sections": sections,
+        "metadata": {
+            "parser": "md",
+            "section_count": len(sections),
+        },
     }
 
 def parse_pdf(file_path: str) -> dict:
@@ -376,6 +387,63 @@ def parse_pptx(file_path: str) -> dict:
             "slide_count": len(presentation.slides),
         },
     }
+
+
+
+def _flush_markdown_section(sections: list[dict], title: str, lines: list[str]) -> None:
+    section_text = normalize_text("\n".join(lines))
+    if section_text:
+        sections.append(
+            {
+                "section": title,
+                "text": section_text,
+            }
+        )
+
+def _extract_markdown_sections(raw_text: str) -> list[dict]:
+    """
+    从 Markdown 中抽取标题 section。
+
+    这是 heading-aware chunking 的基础。
+    没有这一步的话，后面的 chunking 层就看不到标题结构。
+    """
+    lines = (raw_text or "").splitlines()
+    sections: list[dict] = []
+
+    current_title = "正文"
+    current_lines: list[str] = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        match = MD_HEADING_RE.match(line.strip())
+
+        if match:
+            if current_lines:
+                _flush_markdown_section(sections, current_title, current_lines)
+
+            heading_level = len(match.group(1))
+            heading_text = normalize_text(match.group(2))
+            current_title = f"H{heading_level} {heading_text}" if heading_text else "正文"
+            current_lines = []
+            continue
+
+        current_lines.append(line)
+
+    if current_lines:
+        _flush_markdown_section(sections, current_title, current_lines)
+
+    if not sections:
+        clean_text = normalize_text(raw_text)
+        if clean_text:
+            sections.append(
+                {
+                    "section": "正文",
+                    "text": clean_text,
+                }
+            )
+
+    return sections
+
 
 def parse_document(file_path: str, file_type: str) -> dict:
     """

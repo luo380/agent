@@ -14,7 +14,7 @@
 
 # 启用 Python 3.7+ 的类型注解向后兼容
 from __future__ import annotations
-
+from core.db.models import KnowledgeChunks, KNOWLEDGE_CHUNK_ROLE_LEAF
 import json
 # 用于定义不可变的数据类
 from dataclasses import dataclass
@@ -247,53 +247,162 @@ def _load_index(user_id: int):
 
 def rebuild_user_faiss_index(db: Session, *, user_id: int) -> int:
     """
-    重建指定用户的 FAISS 向量索引
+    重建指定用户的 FAISS 向量索引。
 
-    从数据库中读取该用户的所有知识块，提取嵌入向量，构建 FAISS 索引并保存到磁盘。
+    这一版和旧版最大的区别是：
+    - 只给 leaf chunk 建索引
+    - parent chunk 不进向量索引
+    这更符合 parent-child retrieval 的主流设计。
 
-    参数：
-        db: SQLAlchemy 数据库会话
-        user_id: 用户ID（关键字参数）
+    完整流程：
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 1. 检查 FAISS 是否可用，不可用则直接返回 0                    │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 2. 从数据库查询该用户所有 leaf chunk 的 embedding             │
+    │    SELECT chunk_id, document_id, embedding_json              │
+    │    FROM knowledge_chunks                                    │
+    │    WHERE user_id = {user_id}                                │
+    │      AND chunk_role = 'leaf'                                │
+    │    ORDER BY document_id ASC, chunk_index ASC                │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 3. 逐行解析 embedding，校验维度一致性                          │
+    │    - 解析失败（损坏的 JSON）→ 跳过                             │
+    │    - 维度不一致（不同模型生成的）→ 跳过                         │
+    │    - 有效的向量 → 加入 vectors 列表，同时记录元数据             │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 4. 如果没有有效向量 → 删除旧索引文件，返回 0                    │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 5. L2 归一化向量矩阵，构建 FAISS 索引                          │
+    │    - 使用 IndexFlatIP（内积索引，等价于余弦相似度）             │
+    │    - 归一化后内积 = 余弦相似度，速度快且精度高                  │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 6. 原子写入：先写临时文件，再替换原文件                         │
+    │    - 写 mode.faiss.tmp 和 mode.json.tmp                       │
+    │    - 成功后 .replace() 替换原文件                              │
+    │    - 避免写入过程中程序崩溃导致文件损坏                         │
+    └──────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 7. 返回已索引的 chunk 数量                                     │
+    └──────────────────────────────────────────────────────────────┘
 
-    返回：
-        int: 成功索引的知识块数量，FAISS 不可用时返回 0
+    Args:
+        db: 数据库会话
+        user_id: 用户 ID
+
+    Returns:
+        int: 成功索引的 chunk 数量。0 表示没有 chunk 被索引。
+
+    ────────────────────────────────────────────────────────────────
+    示例场景：
+    ────────────────────────────────────────────────────────────────
+
+    【场景1：用户刚上传了 3 个文档，需要重建索引】
+    >>> rebuild_user_faiss_index(db, user_id=42)
+    150
+    # 用户42有150个 leaf chunk，全部写入 FAISS 索引
+
+    输出文件：
+        data/faiss/user_42.faiss   ← FAISS 二进制索引文件
+        data/faiss/user_42.json    ← 元数据映射文件
+
+    元数据文件内容示例：
+        [
+            {"chunk_id": 1001, "document_id": 88},
+            {"chunk_id": 1002, "document_id": 88},
+            {"chunk_id": 1003, "document_id": 89},
+            ...
+        ]
+
+    【场景2：用户没有 leaf chunk（所有文档都解析失败）】
+    >>> rebuild_user_faiss_index(db, user_id=99)
+    0
+    # 删除旧索引文件（如果有），返回 0
+
+    【场景3：FAISS 未安装】
+    >>> rebuild_user_faiss_index(db, user_id=42)
+    0
+    # 直接返回 0，不做任何操作
+
+    ────────────────────────────────────────────────────────────────
+    设计决策说明：
+    ────────────────────────────────────────────────────────────────
+    1. 为什么只索引 leaf chunk？
+       parent chunk 是"大上下文块"，在 small-to-big 检索策略中，
+       先用 leaf chunk 做向量召回，命中后再展开 parent chunk 获取完整上下文。
+       把 parent 也放进索引会导致检索结果冗余，且浪费存储空间。
+
+    2. 为什么用 IndexFlatIP（内积）而不是 IndexFlatL2（欧氏距离）？
+       对 L2 归一化后的向量，内积 = 余弦相似度。
+       余弦相似度比欧氏距离更适合语义搜索（更关注方向而非大小）。
+
+    3. 为什么维度不一致的向量要跳过？
+       不同 embedding 模型输出的向量维度不同（如 768、1024、1536）。
+       混入不同维度的向量会导致 FAISS 索引构建失败。
+       跳过是安全的兜底策略，因为这些向量通常来自旧模型或配置错误。
+
+    4. 为什么用原子写入（tmp → replace）？
+       如果直接写入原文件，写入过程中程序崩溃会导致文件损坏。
+       先写临时文件，再 replace 是原子操作（POSIX rename），不会产生半成品文件。
     """
-    # 检查 FAISS 是否可用
+    # ========== 1. 检查 FAISS 是否可用 ==========
     if not faiss_available():
         return 0
 
-    # 从数据库查询用户的所有知识块
-    # 按 document_id 和 chunk_index 排序，确保顺序一致
+    # ========== 2. 从数据库查询所有 leaf chunk 的 embedding ==========
+    # 只查 leaf chunk（chunk_role == 'leaf'），parent chunk 不参与向量检索
+    # 按 document_id + chunk_index 排序，保证索引顺序稳定
     rows = (
         db.query(
             KnowledgeChunks.id.label("chunk_id"),
-            KnowledgeChunks.document_id,
-            KnowledgeChunks.embedding_json,
+            KnowledgeChunks.document_id,       # 用于后续追溯 chunk 所属的文档
+            KnowledgeChunks.embedding_json,     # 向量数据，通常是 JSON 字符串或 list
         )
-        .filter(KnowledgeChunks.user_id == user_id)
+        .filter(
+            KnowledgeChunks.user_id == user_id,
+            KnowledgeChunks.chunk_role == KNOWLEDGE_CHUNK_ROLE_LEAF,  # 只取 leaf
+        )
         .order_by(KnowledgeChunks.document_id.asc(), KnowledgeChunks.chunk_index.asc())
         .all()
     )
 
-    # 存储向量和元数据
-    vectors: list[list[float]] = []
-    metadata: list[dict[str, int]] = []
-    dimension: int | None = None  # 向量维度
+    # ========== 3. 初始化收集容器 ==========
+    vectors: list[list[float]] = []       # 向量列表，每一行对应一个 chunk 的 embedding
+    metadata: list[dict[str, int]] = []   # 元数据列表，记录每个向量对应的 chunk_id 和 document_id
+    dimension: int | None = None          # 第一个有效向量的维度，用于校验后续向量一致性
 
-    # 遍历查询结果，提取有效向量
+    # ========== 4. 逐行解析 embedding ==========
     for row in rows:
+        # 解析 embedding：支持 JSON 字符串、list、None 三种格式
         embedding = _parse_embedding_json(row.embedding_json)
         if not embedding:
-            continue  # 跳过无效向量
+            continue  # 解析失败或为空，跳过这条记录
 
-        # 确定向量维度（首次遇到有效向量时）
+        # 用第一个有效向量的维度作为基准
         if dimension is None:
             dimension = len(embedding)
-        # 跳过维度不一致的向量
+        # 如果后续向量维度不一致（如不同模型生成的），跳过
         if len(embedding) != dimension:
             continue
 
         vectors.append(embedding)
+        # 保存元数据：chunk_id 用于检索后回查数据库，document_id 用于追溯文档
         metadata.append(
             {
                 "chunk_id": int(row.chunk_id),
@@ -301,39 +410,45 @@ def rebuild_user_faiss_index(db: Session, *, user_id: int) -> int:
             }
         )
 
-    # 如果没有有效向量，删除旧索引并返回
+    # ========== 5. 无有效向量时，清理旧索引 ==========
+    # 如果用户之前有索引但现在所有 chunk 都被删了，需要把旧文件也删掉
     if not vectors or dimension is None:
         _remove_user_index_files(user_id)
         return 0
 
-    # 将向量列表转换为 NumPy 矩阵并归一化
-    #向量入库前预处理：确保所有索引向量长度一致
-    #查询向量预处理：保证查询时与索引向量具有可比性
-    #内积检索优化：加速相似度计算
+    # ========== 6. 构建 FAISS 索引 ==========
+    # 6.1 将向量列表转为 NumPy 矩阵，并做 L2 归一化
+    #     归一化后，内积（Inner Product）等价于余弦相似度
     matrix = _normalize_matrix(np.asarray(vectors, dtype="float32"))
 
-    # 创建 FAISS 索引：使用 IndexFlatIP（内积索引）
-    # 内积在归一化后等价于余弦相似度
+    # 6.2 创建 IndexFlatIP 索引
+    #     IndexFlatIP: 暴力内积索引，对所有向量做精确最近邻搜索
+    #     "Flat" 表示不压缩，精度最高但内存占用大
+    #     适合中小规模数据（< 10万条），如果需要更大规模可改用 IVF 或 HNSW
     index = faiss.IndexFlatIP(dimension)
-    index.add(matrix)  # 将向量添加到索引
+    index.add(matrix)  # 将归一化后的向量矩阵加入索引
 
-    # 获取文件路径
-    index_path = _index_file_path(user_id)
-    metadata_path = _metadata_file_path(user_id)
-    index_tmp = _tmp_path(index_path)
-    metadata_tmp = _tmp_path(metadata_path)
+    # ========== 7. 原子写入索引文件和元数据文件 ==========
+    # 7.1 获取文件路径
+    index_path = _index_file_path(user_id)        # 如: data/faiss/user_42.faiss
+    metadata_path = _metadata_file_path(user_id)  # 如: data/faiss/user_42.json
+    index_tmp = _tmp_path(index_path)             # 如: data/faiss/user_42.faiss.tmp
+    metadata_tmp = _tmp_path(metadata_path)       # 如: data/faiss/user_42.json.tmp
 
-    # 先写入临时文件
-    faiss.write_index(index, str(index_tmp))
+    # 7.2 写入临时文件
+    faiss.write_index(index, str(index_tmp))      # FAISS 索引存为二进制 .faiss 文件
     metadata_tmp.write_text(
-        json.dumps(metadata, ensure_ascii=False),
+        json.dumps(metadata, ensure_ascii=False),  # 元数据存为 JSON，ensure_ascii=False 保留中文
         encoding="utf-8",
     )
 
-    # 原子替换原文件（确保写入失败时不会损坏原文件）
+    # 7.3 原子替换：用临时文件覆盖正式文件
+    #     .replace() 在 POSIX 上是原子操作（rename），不会出现半成品文件
+    #     在 Windows 上如果目标文件存在会先删除再重命名，也是安全的
     index_tmp.replace(index_path)
     metadata_tmp.replace(metadata_path)
 
+    # ========== 8. 返回成功索引的 chunk 数量 ==========
     return len(metadata)
 
 

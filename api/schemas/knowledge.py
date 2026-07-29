@@ -26,7 +26,15 @@ class KnowledgeChunkResponse(BaseModel):
     document_id: int
     user_id: int
     chunk_index: int
+    chunk_role: str
+    parent_chunk_id: int | None
+    parent_title: str
+    block_type: str
+    child_index: int
+    table_row_from: int | None
+    table_row_to: int | None
     content: str
+    retrieval_content: str
     start_offset: int
     end_offset: int
     source_page: int | None

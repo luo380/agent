@@ -13,9 +13,10 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_text_splitters import TextSplitter
 from pydantic import ConfigDict, Field, PrivateAttr
 
-from core.service.chunking import chunk_parsed_document, chunk_text
+from core.db.models import KNOWLEDGE_CHUNK_ROLE_LEAF
 from core.service.document_parser import parse_document
 from core.service.embedding import embed_text, embed_texts
+from core.service.hierarchical_chunking import build_hierarchical_chunks
 from core.service.retrieval import RetrievedChunk, rerank_chunks, search_similar_chunks
 
 """
@@ -195,8 +196,28 @@ def retrieved_chunks_to_langchain_documents(
     return [retrieved_chunk_to_langchain_document(chunk) for chunk in chunks]
 
 
+def _build_leaf_chunk_items(
+    parsed_document: Mapping[str, Any],
+    *,
+    file_type: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    chunk_items = build_hierarchical_chunks(
+        dict(parsed_document or {}),
+        file_type=file_type or "txt",
+        chunk_size=chunk_size,
+        overlap=chunk_overlap,
+    )
+    return [
+        item
+        for item in chunk_items
+        if item.get("chunk_role") == KNOWLEDGE_CHUNK_ROLE_LEAF
+    ]
+
 
 # ==============================================
+
 # 文档加载器类
 # ==============================================
 class ProjectDocumentLoader(BaseLoader):
@@ -340,14 +361,21 @@ class ProjectTextSplitter(TextSplitter):
         LangChain TextSplitter 要求实现 split_text(...)。
         这里直接复用你第 4 阶段写好的 chunk_text(...)。
         """
-        return [
-            item["content"]
-            for item in chunk_text(
-                text,
-                chunk_size=self.project_chunk_size,
-                overlap=self.project_chunk_overlap,
-            )
-        ]
+        chunk_items = _build_leaf_chunk_items(
+            {
+                "full_text": text or "",
+                "pages": [],
+                "sections": [],
+                "metadata": {},
+            },
+            file_type="txt",
+            chunk_size=self.project_chunk_size,
+            chunk_overlap=self.project_chunk_overlap,
+        )
+        if not chunk_items:
+            clean_text = (text or "").strip()
+            return [clean_text] if clean_text else []
+        return [item["content"] for item in chunk_items]
 
     def split_documents(self, documents: Sequence[Document]) -> list[Document]:
         """
@@ -364,14 +392,20 @@ class ProjectTextSplitter(TextSplitter):
             base_metadata = dict(document.metadata or {})
             parsed_document = base_metadata.pop("parsed_document", None)
 
+            file_type = str(base_metadata.get("file_type") or "txt")
             if parsed_document is None:
-                split_documents.extend(self.create_documents([document.page_content], [base_metadata]))
-                continue
+                parsed_document = {
+                    "full_text": document.page_content or "",
+                    "pages": [],
+                    "sections": [],
+                    "metadata": {},
+                }
 
-            chunk_items = chunk_parsed_document(
+            chunk_items = _build_leaf_chunk_items(
                 parsed_document,
+                file_type=file_type,
                 chunk_size=self.project_chunk_size,
-                overlap=self.project_chunk_overlap,
+                chunk_overlap=self.project_chunk_overlap,
             )
 
             for chunk in chunk_items:
@@ -381,11 +415,18 @@ class ProjectTextSplitter(TextSplitter):
                         metadata={
                             **base_metadata,
                             "chunk_index": chunk["chunk_index"],
+                            "chunk_role": chunk["chunk_role"],
+                            "parent_title": chunk["parent_title"],
+                            "block_type": chunk["block_type"],
+                            "child_index": chunk["child_index"],
+                            "table_row_from": chunk["table_row_from"],
+                            "table_row_to": chunk["table_row_to"],
+                            "retrieval_content": chunk["retrieval_content"],
                             "start_offset": chunk["start_offset"],
                             "end_offset": chunk["end_offset"],
                             "source_page": chunk["source_page"],
                             "source_section": chunk["source_section"],
-                            "lc_splitter": "project_chunk_parsed_document",
+                            "lc_splitter": "project_hierarchical_chunking",
                         },
                     )
                 )

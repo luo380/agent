@@ -37,6 +37,14 @@ RAG_STEP_STATUS_COMPLETED = "completed"
 RAG_STEP_STATUS_FAILED = "failed"
 
 
+
+KNOWLEDGE_CHUNK_ROLE_PARENT = "parent"
+KNOWLEDGE_CHUNK_ROLE_LEAF = "leaf"
+KNOWLEDGE_BLOCK_TYPE_TEXT = "text"
+KNOWLEDGE_BLOCK_TYPE_TABLE = "table"
+
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -155,15 +163,62 @@ class KnowledgeChunks(Base):
         index=True,
         nullable=False,
     )
+
+    # 全局顺序编号。
+    # 这里不是“只给 leaf 编号”，而是 parent / leaf 都在同一条时间线上排序，
+    # 这样文档详情页按 chunk_index 展示时，结构会更容易看懂。
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # parent / leaf
+    # parent: 大块上下文，供 small-to-big expand 后给 LLM
+    # leaf:   小块召回单元，供 embedding / BM25 / FAISS 检索
+    chunk_role: Mapped[str] = mapped_column(String(20), default=KNOWLEDGE_CHUNK_ROLE_LEAF, nullable=False)
+
+    # 如果当前是 leaf chunk，这里指向它所属的 parent chunk
+    # 如果当前是 parent chunk，则为 None
+    parent_chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_chunks.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+
+    # 父级标题/主题，主要用于：
+    # 1. 检索时把 parent 主题注入 retrieval_content
+    # 2. 调试时更容易看出这块属于哪个大主题
+    parent_title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+    # text / table
+    # 不同 block_type 后续可以走不同 chunking 和 retrieval 策略
+    block_type: Mapped[str] = mapped_column(String(30), default=KNOWLEDGE_BLOCK_TYPE_TEXT, nullable=False)
+
+    # child 在 parent 内的顺序编号
+    child_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # 如果是表格块，可记录该 leaf 覆盖的是哪几行
+    table_row_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    table_row_to: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 给模型看的原始内容。
+    # parent chunk: 一般是完整大段正文或完整表格
+    # leaf chunk:   一般是子块正文或表格子块
     content: Mapped[str] = mapped_column(LongText, nullable=False)
+
     start_offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     end_offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_section: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+    # 真正给 embedding / BM25 用的检索文本。
+    # 它通常比 content 多一点“检索增强信息”，例如父标题、内容类型提示等。
+    # 这样能提高 child chunk 的召回准确率。
+    retrieval_content: Mapped[str] = mapped_column(LongText, default="", nullable=False)
+
+    # 只有 leaf chunk 才会有 embedding_json
+    # parent chunk 一般不做 embedding，避免向量空间被大块噪音污染
     embedding_json: Mapped[str] = mapped_column(LongText, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, nullable=False)
-
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now, nullable=False)
 
 class RagRuns(Base):
     __tablename__ = "rag_runs"
