@@ -13,8 +13,12 @@ from core.db.models import (
     KNOWLEDGE_CHUNK_ROLE_PARENT,
 )
 from core.service.vector_index import rebuild_user_faiss_index, search_user_faiss_index
-from core.service.rag_grounding import evidence_match_score
-
+from core.service.rag_grounding import (
+    evidence_match_score,
+    extract_question_focus_terms,
+    relation_evidence_score,
+)
+from core.service.query_rewrite import build_weighted_rewrite_queries
 
 """
 它是 RAG 的“检索中间层”负责把“用户问题”变成“可用的知识块候选”，不负责生成答案。
@@ -297,11 +301,10 @@ def bm25_search(
     # _tokenize_for_bm25(query_text) 会把查询文本分词成token列表（支持中英混合+CJK n-gram）
     # dict.fromkeys(...) 的作用：按原始顺序去除重复的token（因为BM25里查询词重复不增加分数）
     # 例如：查询"小爱小爱同学" → 分词["小爱","小爱","同学"] → 去重后["小爱","同学"]
-    query_tokens = list(dict.fromkeys(_tokenize_for_bm25(query_text)))
-    # 快速通道：没有候选文档 或 查询分词为空 → 直接返回空列表
+    query_term_weights = _build_weighted_bm25_query_terms(query_text)
+    query_tokens = list(query_term_weights.keys())
     if not candidates or not query_tokens:
         return []
-
     # ===== 步骤3：预处理所有候选文档，构建3个关键统计量 =====
     """
     prepared_docs 列表中每个元素是一个三元组：
@@ -365,34 +368,18 @@ def bm25_search(
 
         # 遍历每个去重后的查询词，累加每个词对本文档的BM25贡献分
         for term in query_tokens:
-            # tf：该查询词在【当前文档】中的出现次数（词频），不存在则为0
             tf = tf_counter.get(term, 0)
-            # 词频为0 → 该查询词不在本文档中 → 跳过不贡献分数
             if tf <= 0:
                 continue
 
-            # df：该查询词在【所有候选文档】中出现的文档数（文档频率），不存在则为0
+            # 这一步让 rewrite 生成出来的 query token 真正影响 BM25
+            term_weight = query_term_weights.get(term, 1.0)
+
             df = doc_freq.get(term, 0)
-            # ─────────────────────────────────────────────────
-            # IDF计算：逆文档频率（稀有词 → IDF大，常见词 → IDF小）
-            # 公式：log(1 + (N - df + 0.5) / (df + 0.5))
-            # 其中+0.5是Laplace平滑项，防止df=0时分母为0或出现极端值
-            # ─────────────────────────────────────────────────
             idf = math.log(1 + ((total_docs - df + 0.5) / (df + 0.5)))
-            # ─────────────────────────────────────────────────
-            # BM25分母部分：融合词频饱和度+文档长度归一化
-            # denom = tf + k1 × (1 - b + b × (doc_len/avgdl))
-            #   - 文档越长 → (doc_len/avgdl) > 1 → 分母变大 → 惩罚长文档
-            #   - 文档越短 → (doc_len/avgdl) < 1 → 分母变小 → 奖励短文档
-            #   - k1控制词频饱和度，b控制长度归一化强度
-            # ─────────────────────────────────────────────────
             denom = tf + k1 * (1 - b + b * (doc_len / avg_doc_len))
-            # ─────────────────────────────────────────────────
-            # 累加该查询词的贡献分：IDF × [ tf×(k1+1) / denom ]
-            # 分子 tf×(k1+1) 保证分子比分母中tf项大一些，配合分母实现「词频饱和度」效果：
-            # tf从1→2时提升明显，tf从10→11时几乎无提升（类似log曲线）
-            # ─────────────────────────────────────────────────
-            score += idf * ((tf * (k1 + 1)) / denom)
+
+            score += term_weight * idf * ((tf * (k1 + 1)) / denom)
 
         # 得分≤0（没有任何查询词命中）→ 不加入结果，相当于过滤完全不相关的文档
         if score <= 0:
@@ -747,7 +734,33 @@ def phrase_overlap_score(query_text: str, chunk_text: str) -> float:
         for query_form in _phrase_query_forms(normalized_query)
     )
 
+def build_weighted_recall_query_forms(query_text: str) -> list[tuple[str, float]]:
+    """
+    把 query rewrite 层产出的 RewriteQuery 转成 retrieval 层能直接消费的 (text, weight) 结构。
+    """
+    rewrites = build_weighted_rewrite_queries(query_text)
+    return [(item.text, item.weight) for item in rewrites]
 
+
+
+def _build_weighted_bm25_query_terms(query_text: str) -> dict[str, float]:
+    """
+    给 BM25 用的“带权重查询词表”。
+
+    思路：
+    - 原问题里的 token 权重最高
+    - rewrite 里来的 token 也参与 BM25
+    - 同一个 token 如果来自多条 rewrite，保留最高权重
+    """
+    term_weights: dict[str, float] = {}
+
+    for form_text, form_weight in build_weighted_recall_query_forms(query_text):
+        for token in dict.fromkeys(_tokenize_for_bm25(form_text)):
+            current_weight = term_weights.get(token, 0.0)
+            if form_weight > current_weight:
+                term_weights[token] = form_weight
+
+    return term_weights
 
 # 计算关键词重合度
 # 查询："Python 编程 教程" → 分词结果：{"python", "编程", "教程"}（共3个词元）
@@ -791,75 +804,24 @@ def _append_query_form(forms: list[str], seen: set[str], value: str) -> None:
     forms.append(clean_value)
 
 
-# 作用：为用户问题生成多种查询形式，用于后续检索时提高召回率。
+
 def build_recall_query_forms(query_text: str) -> list[str]:
-    # 1. 添加原始查询（标准化后）
-    normalized_text = re.sub(r"\s+", "", (query_text or "").lower())
-    if not normalized_text:
-        return []
-
-    forms: list[str] = []
-    seen: set[str] = set()
-    _append_query_form(forms, seen, normalized_text)
-    # 2. 提取焦点查询（基于 QUERY_FOCUS_ANCHORS）
-    focused_query = normalized_text
-    for anchor_text in QUERY_FOCUS_ANCHORS:
-        anchor_index = normalized_text.find(anchor_text)
-        if anchor_index > 0:
-            candidate = normalized_text[anchor_index:]   # 提取锚点后的内容
-            if len(candidate) >= max(len(anchor_text) + 2, 4):
-                focused_query = candidate
-                _append_query_form(forms, seen, focused_query)
-            break
-
-    # 3. 添加长关键词（长度≥4的分词结果）
-    for token in sorted(tokenize(focused_query), key=len, reverse=True):
-        if len(token) >= 4:
-            _append_query_form(forms, seen, token)
-        if len(forms) >= 5:   # 最多生成5种形式
-            break
-
-    return forms
-# 原始问题：扫地机器人是否可以水洗
-#        │
-#        ├─ 找到锚点："是否"
-#        │
-#        └─ 提取焦点："是否可以水洗"
-#
-# 最终查询形式：
-# 1. "扫地机器人是否可以水洗"（原问题）
-# 2. "是否可以水洗"          （焦点查询）
-
-def coarse_recall_score(query_text: str | None, chunk_text: str, vector_score: float) -> float:
-    query_forms = build_recall_query_forms(query_text or "")    # 生成查询的多种形式
-    if not query_forms:
-        return round(vector_score, 6)
-
-    primary_form = query_forms[0]  # 主要查询形式（原问题）
-    focused_forms = query_forms[1:] or [primary_form]   # 扩展查询形式
-
-    # 主查询的奖励分
-    primary_bonus = (
-        (keyword_overlap_score(primary_form, chunk_text) * 0.03)
-        + (phrase_overlap_score(primary_form, chunk_text) * 0.05)
-    )
-    # 扩展查询的奖励分（权重更高）
-    focused_bonus = max(
-        (
-            (keyword_overlap_score(form, chunk_text) * 0.22)
-            + (phrase_overlap_score(form, chunk_text) * 0.30)
-        )
-        for form in focused_forms
-    )
-    # 最终分数 = 向量相似度 + 主查询奖励 + 扩展查询奖励
-    #          = vector_score + (keyword×0.03 + phrase×0.05) + max(keyword×0.22 + phrase×0.30)
-
-    evidence_bonus = _evidence_score(query_text, chunk_text) * 0.45
-
-    return round(vector_score + primary_bonus + focused_bonus + evidence_bonus, 6)
+    """
+     向后兼容旧接口：
+     - 旧代码只认 list[str]
+     - 新实现内部已经走 weighted rewrite
+     """
+    return [text for text, _ in build_weighted_recall_query_forms(query_text)]
 
 def keyword_overlap_score(query_text: str, chunk_text: str) -> float:
-    # 关键词重合度，作为 rerank 的补充信号
+    """
+    计算查询和知识块之间的关键词重合度。
+
+    说明：
+    - 复用项目里现有的 tokenize(...) 做中英文混合分词
+    - 分数 = 命中的 query token 数 / query token 总数
+    - 这个分数主要给 coarse recall 和 rerank 当补充信号
+    """
     query_tokens = tokenize(query_text)
     if not query_tokens:
         return 0.0
@@ -869,6 +831,155 @@ def keyword_overlap_score(query_text: str, chunk_text: str) -> float:
         return 0.0
 
     return len(query_tokens & chunk_tokens) / len(query_tokens)
+
+
+def coarse_recall_score(query_text: str | None, chunk_text: str, vector_score: float) -> float:
+    """
+    【粗排阶段】对召回阶段返回的候选chunk进行快速打分排序。
+
+    ═══════════════════════════════════════════════════════
+    检索流程阶段说明:
+    ═══════════════════════════════════════════════════════
+    阶段1: 召回 (Recall)
+      └─ 从海量文档中快速筛选出候选集
+      └─ 方法: 向量检索 + BM25关键词匹配
+      └─ 输出: 数百个候选chunk
+
+    阶段2: 粗排 (Coarse Ranking) ← 当前函数
+      └─ 对候选集进行快速打分
+      └─ 方法: 向量得分 + 4种奖励分
+      └─ 输出: 按coarse_recall_score排序的候选chunk
+
+    阶段3: 精排 (Fine Ranking)
+      └─ 对粗排结果进行精细化打分
+      └─ 方法: rerank_chunks() 多维度综合评分
+      └─ 输出: top_k个最终结果
+
+    阶段4: 生成 (Generation)
+      └─ 基于精排结果生成最终答案
+      └─ 方法: LLM根据top_k个chunk生成回答
+
+    ═══════════════════════════════════════════════════════
+    粗排核心策略:
+    ═══════════════════════════════════════════════════════
+    1. 保留原始 query 的匹配奖励(低权重)
+    2. 让 rewrite 变体真正参与粗排(高权重)
+    3. 新增 relation_evidence_score，避免"主题接近但关系不对"的chunk抢排位
+
+    参数:
+        query_text: 用户查询文本(可为None)
+        chunk_text: 待评分的文档块内容
+        vector_score: 向量相似度得分(来自embedding模型)
+
+    返回:
+        综合粗排得分(float)
+
+    示例:
+        >>> query = "我家扫地机器人能不能连5G WiFi？"
+        >>> chunk = "本产品支持5G WiFi双频连接，兼容802.11ac协议"
+        >>> vector_score = 0.85
+        >>> score = coarse_recall_score(query, chunk, vector_score)
+        >>> print(f"粗排得分: {score}")
+
+        粗排得分: 1.234567 (vector_score + 各奖励分)
+
+        说明:
+        - vector_score=0.85 是基础分
+        - primary_bonus: 原问题匹配奖励(低权重)
+        - rewrite_bonus: 改写变体匹配奖励(高权重,因为标准化查询更匹配文档)
+        - evidence_bonus: 证据分(知识库置信度)
+        - relation_bonus: 关系证据分(实体+关系都命中)
+
+    示例2: 关系不匹配的情况
+        >>> query = "我家扫地机器人能不能连5G WiFi？"
+        >>> chunk = "扫地机器人支持蓝牙连接，可与手机配对"
+        >>> vector_score = 0.80
+        >>> score = coarse_recall_score(query, chunk, vector_score)
+
+        说明: 虽然向量得分更高(0.80),但关系不匹配
+        relation_bonus 会很低,因为问的是"WiFi"连接,答的是"蓝牙"连接
+    """
+    # ═══════════════════════════════════════════════════════
+    # 【阶段2-1】准备查询变体
+    # ═══════════════════════════════════════════════════════
+    # 生成带权重的查询变体
+    # 输入: "我家扫地机器人能不能连5G WiFi？"
+    # 输出: [
+    #   ("我家扫地机器人能不能连5G WiFi？", 1.0),   # 原始查询,权重1.0
+    #   ("扫地机器人 连接 5G WiFi", 0.96),           # 标准化查询
+    #   ("扫地机器人 5G WiFi", 0.86),               # 实体对
+    #   ("扫地机器人 接入 5G WiFi", 0.72),           # 同义词改写
+    # ]
+    weighted_forms = build_weighted_recall_query_forms(query_text or "")
+
+    # 如果无法生成查询变体,直接返回向量得分
+    if not weighted_forms:
+        return round(vector_score, 6)
+
+    # 分离主查询和扩展查询
+    # primary_form: 权重最高的查询(通常是原始问题)
+    # expanded_forms: 其余改写变体
+    primary_form = weighted_forms[0][0]
+    expanded_forms = weighted_forms[1:] or weighted_forms[:1]
+
+    # ═══════════════════════════════════════════════════════
+    # 【阶段2-2】计算各类奖励分
+    # ═══════════════════════════════════════════════════════
+
+    # ─── 奖励1: 原问题匹配奖励 ───
+    # 权重较低(0.03 + 0.05),主要用于保留"原问法信号"
+    # 为什么低权重? 因为用户口语化表达可能不标准,不应过度依赖
+    # 示例: "我家扫地机器人能不能连5G WiFi？"
+    #   关键词重叠: "扫地机器人"、"5G"、"WiFi" 部分匹配
+    #   短语重叠: "5G WiFi" 连续短语匹配
+    primary_bonus = (
+            (keyword_overlap_score(primary_form, chunk_text) * 0.03)  # 关键词重叠 * 0.03
+            + (phrase_overlap_score(primary_form, chunk_text) * 0.05)  # 短语重叠 * 0.05
+    )
+
+    # ─── 奖励2: rewrite 匹配奖励 ───
+    # 权重更高(0.20 + 0.28),让"标准化问法"真正影响粗排
+    # 为什么高权重? 标准化查询更接近知识库文档的表述方式
+    # 取所有变体中最高的得分(乘以各自的变体权重)
+    # 示例: 候选chunk = "本产品支持5G WiFi双频连接"
+    #   "扫地机器人 连接 5G WiFi" 关键词匹配度 0.9 * 0.96 = 0.864
+    #   "扫地机器人 接入 5G WiFi" 关键词匹配度 0.8 * 0.72 = 0.576
+    #   → rewrite_bonus = max(0.864, 0.576) = 0.864
+    rewrite_bonus = max(
+        (
+                (
+                        (keyword_overlap_score(form_text, chunk_text) * 0.20)  # 关键词重叠 * 0.20
+                        + (phrase_overlap_score(form_text, chunk_text) * 0.28)  # 短语重叠 * 0.28
+                ) * form_weight  # 乘以变体权重
+        )
+        for form_text, form_weight in expanded_forms
+    )
+
+    # ─── 奖励3: 证据分(原有) ───
+    # 权重 0.40,基于知识库的置信度信息
+    # 例如: 文档的权威性、时效性等
+    evidence_bonus = _evidence_score(query_text, chunk_text) * 0.40
+
+    # ─── 奖励4: 关系证据分(新增) ───
+    # 权重 0.18,主体/客体/关系同时命中时给奖励
+    # 解决"主题接近但关系不对"的chunk抢排位
+    # 示例: 问"扫地机器人能不能连WiFi"
+    #   文档A: "支持5G WiFi连接" → relation_bonus 高(主体+客体+关系都匹配)
+    #   文档B: "支持蓝牙连接" → relation_bonus 低(主体匹配,但客体/关系不匹配)
+    relation_bonus = relation_evidence_score(query_text or "", chunk_text) * 0.18
+
+    # ═══════════════════════════════════════════════════════
+    # 【阶段2-3】计算最终得分并返回
+    # ═══════════════════════════════════════════════════════
+    # 最终得分 = 向量基础分 + 4种奖励分
+    return round(
+        vector_score  # 向量相似度(基础分)
+        + primary_bonus  # 原问题匹配奖励(低权重)
+        + rewrite_bonus  # rewrite匹配奖励(高权重)
+        + evidence_bonus  # 证据分(知识库置信度)
+        + relation_bonus,  # 关系证据分(关系命中校验)
+        6,  # 保留6位小数
+    )
 
 
 # * 之后的所有参数必须使用关键字（keyword）方式传递，不能使用位置（positional）方式。
@@ -1482,156 +1593,147 @@ def search_similar_chunks_by_embedding(
 #                 ├─ 按 final_score 降序排序
 #                 └─ 返回 Top 5 → 给 LLM 做 RAG
 def rerank_chunks(
-    # 用户的原始查询文本（问题），用于计算各种关键词/短语/证据匹配奖励分
-    query_text: str,
-    # 粗排阶段的候选知识块列表（通常是 hybrid_search 返回的 Top 2K Parent大块结果）
-    chunks: Sequence[RetrievedChunk],
-    # 精排后最终返回的Top K数量（精排计算量较大，所以top_k通常较小，如5~10）
-    top_k: int = 5,
+        query_text: str,
+        chunks: Sequence[RetrievedChunk],
+        top_k: int = 5,
 ) -> list[RetrievedChunk]:
     """
-    【精排阶段（Rerank）】对粗排后的候选chunks做多维度加权精细重排，选出最相关的Top K。
+    【精排阶段】对粗排返回的候选文档块进行精细化打分排序。
 
-    精排 vs 粗排的区别：
-        粗排（hybrid_search / _score_retrieved_chunks）：计算快、维度少，负责从大库里捞Top几百条
-        精排（本函数）：计算细、维度多、权重精准调优，负责从粗排Top几十条里挑最相关的Top K给LLM
+    ═══════════════════════════════════════════════════════
+    检索流程阶段说明:
+    ═══════════════════════════════════════════════════════
+    阶段1: 召回 (Recall)
+      └─ 从海量文档中快速筛选出候选集
+      └─ 方法: 向量检索 + BM25关键词匹配
+      └─ 输出: 数百个候选chunk
 
-    Small-to-Big 场景下的特殊优化：
-        精排对象通常已经是 Parent大块内容，但真正命中用户问题的往往是小块leaf，
-        所以本函数会把 matched_child_content（精准命中的leaf内容）拼进 candidate_text参与评分，
-        防止「大块内容很泛，但真正命中的leaf信号被淹没」导致排序错误。
+    阶段2: 粗排 (Coarse Ranking)
+      └─ 对候选集进行快速打分
+      └─ 方法: 向量得分 + 关键词重叠 + 改写奖励
+      └─ 输出: 数十个候选chunk (按coarse_recall_score排序)
 
-    精排最终加权公式（8个维度，权重之和约等于1.3，允许各维度叠加奖励超过1分）：
-      final_score =
-        chunk.vector_score                 x 0.35   向量语义相似度（粗排基础分，占比最大）
-      + retrieval_keyword_score           x 0.12   粗排阶段BM25关键词分（保留粗排关键词信号）
-      + primary_keyword_score             x 0.04   原始查询词的词命中重叠分（低权重补充）
-      + primary_phrase_score              x 0.04   原始查询词的短语命中重叠分（低权重补充）
-      + keyword_score（所有query_forms取max）x 0.18   扩展查询词的词命中重叠分（较重要）
-      + phrase_score （所有query_forms取max）x 0.22   扩展查询词的短语命中重叠分（最关键的关键词匹配维度）
-      + evidence_score                    x 0.35   证据匹配分（查询中的重要实体/术语是否在文档中有充分证据支撑）
+    阶段3: 精排 (Fine Ranking) ← 当前函数
+      └─ 对粗排结果进行精细化打分
+      └─ 方法: 多维度综合评分(8个维度)
+      └─ 输出: top_k个最终结果 (默认5个)
 
-    【完整例子】用户搜索「Python用PyPDF2读取PDF表格」，粗排返回3个候选chunk，top_k=2
-    build_recall_query_forms("Python用PyPDF2读取PDF表格") 返回的查询扩展形式：
-      query_forms = [
-        "Python用PyPDF2读取PDF表格",  # primary_form 原始形式
-        "Python PyPDF2 读取 PDF 表格", # focused_forms[0] 分词后
-        "pypdf2 pdf 提取表",            # focused_forms[1] 同义词/缩写扩展
-      ]
+    阶段4: 生成 (Generation)
+      └─ 基于精排结果生成最终答案
+      └─ 方法: LLM根据top_k个chunk生成回答
 
-    3个候选Parent大块：
-    ┌────────┬─────────────────────────────────────────────────────┬────────────┬────────────┬──────────────────────────────────────┐
-    │chunk_id│ content（Parent大块600字，只展示核心1句）           │vector_score│keyword_score│ matched_child_content（真正命中的leaf）│
-    ├────────┼─────────────────────────────────────────────────────┼────────────┼────────────┼──────────────────────────────────────┤
-    │ 800    │ 第3章 处理PDF文件...3.1安装 3.2读取页面...         │ 0.82       │ 0.65       │ 3.2.2 用PyPDF2提取PDF表格数据         │
-    │ 810    │ 第4章 pdfplumber实战...表格提取...图像识别...      │ 0.78       │ 0.21       │ 4.1 pdfplumber读取表格               │
-    │ 900    │ 附录A PDF常见问题...加密...压缩...文件损坏修复       │ 0.55       │ 0.30       │ A.3 PDF打不开怎么办                  │
-    └────────┴─────────────────────────────────────────────────────┴────────────┴────────────┴──────────────────────────────────────┘
+    ═══════════════════════════════════════════════════════
+    精排核心策略:
+    ═══════════════════════════════════════════════════════
+    - 原问题保留: 防止改写过拟合,保留原始问法信号
+    - rewrite 变体参与打分: 让标准化问法影响关键词/短语得分
+    - 新增 relation_score: 提升"关系真正命中"的chunk
 
-    ═══════ 逐个chunk精排计算过程 ═══════
+    参数:
+        query_text: 用户查询文本
+        chunks: 粗排阶段返回的候选文档块列表
+        top_k: 最终返回的文档块数量,默认5个
 
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │ chunk800（真正命中的正确答案，PyPDF2提取表）                                 │
-    ├─────────────────────────────────────────────────────────────────────────────┤
-    │ candidate_text = 大块content + matched_child_content拼接（增加强命中信号）   │
-    │ 8个维度打分：                                                                 │
-    │   ① vector_score x 0.35 = 0.82 x 0.35 = 0.287                                │
-    │   ② retrieval_keyword_score(粗排BM25) x 0.12 = 0.65 x 0.12 = 0.078           │
-    │   ③ primary_keyword_score（全命中）= 0.9 x 0.04 = 0.036                      │
-    │   ④ primary_phrase_score（短语PyPDF2读取PDF命中）= 0.85 x 0.04 = 0.034      │
-    │   ⑤ keyword_score(扩展形式取max) = 1.0 x 0.18 = 0.180                        │
-    │   ⑥ phrase_score (扩展形式取max) = 0.95 x 0.22 = 0.209 ←短语命中强，拉分最多 │
-    │   ⑦ evidence_score（4个重要术语都有证据）= 0.92 x 0.35 = 0.322               │
-    │ 合计 final_score = round(0.287+0.078+0.036+0.034+0.180+0.209+0.322, 6)       │
-    │                   = 1.146  ← 排第一！正确答案                                │
-    └─────────────────────────────────────────────────────────────────────────────┘
+    返回:
+        按综合得分降序排列的文档块列表(最多top_k个)
 
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │ chunk810（pdfplumber方案，语义相关但关键词PyPDF2未命中）                     │
-    ├─────────────────────────────────────────────────────────────────────────────┤
-    │ candidate_text = 大块content + 4.1 pdfplumber读取表格                        │
-    │ 打分：vector分高(0.78*0.35=0.273)，但phrase分/evidence分暴跌（缺PyPDF2）     │
-    │ 合计 final_score ≈ 0.612 → 排第二，进入Top 2                                 │
-    └─────────────────────────────────────────────────────────────────────────────┘
-
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │ chunk900（附录常见问题，弱相关只有PDF命中）                                  │
-    ├─────────────────────────────────────────────────────────────────────────────┤
-    │ candidate_text = 附录内容 + A.3 PDF打不开怎么办                              │
-    │ 打分：vector分低(0.55*0.35=0.192)，短语分/证据分几乎为0                      │
-    │ 合计 final_score ≈ 0.279 → 排第三，被Top 2淘汰                               │
-    └─────────────────────────────────────────────────────────────────────────────┘
-
-    精排排序结果：chunk800(1.146) → chunk810(0.612) → chunk900(0.279)
-    return reranked[:top_k=2] → 返回 [chunk800, chunk810]，正确把最相关的排第一！
+    示例:
+        >>> query = "我家扫地机器人能不能连5G WiFi？"
+        >>> chunks = [
+        ...     RetrievedChunk(content="本产品支持5G WiFi双频连接", vector_score=0.85, keyword_score=0.7),
+        ...     RetrievedChunk(content="扫地机器人支持蓝牙连接", vector_score=0.78, keyword_score=0.6),
+        ... ]
+        >>> results = rerank_chunks(query, chunks, top_k=2)
+        >>> for r in results:
+        ...     print(f"得分: {r.final_score}, 内容: {r.content}")
     """
-    # 保存精排后的结果列表（每个元素是重新计算了final_score的RetrievedChunk）
+    # ═══════════════════════════════════════════════════════
+    # 【阶段3-1】准备查询变体
+    # ═══════════════════════════════════════════════════════
     reranked: list[RetrievedChunk] = []
 
-    # ===== 步骤1：构建查询的多种扩展形式（Query Expansion） =====
-    # build_recall_query_forms(query_text) 会返回查询文本的多种变体：
-    #   query_forms[0] = 原始查询 primary_form（原样保留）
-    #   query_forms[1..n] = focused_forms：分词后、同义词扩展、缩写展开、CJK n-gram等
-    # 作用：提高召回率，防止用户说「读取表格」但文档写「提取表」时漏掉匹配
-    query_forms = build_recall_query_forms(query_text)
-    # primary_form：主查询形式 = 第1个元素（通常是原始查询），如果返回空就用原query_text兜底
-    primary_form = query_forms[0] if query_forms else query_text
-    # focused_forms：扩展查询形式列表 = 除了第一个的其余元素；如果没有扩展形式，退化用主查询本身（确保不为空）
-    focused_forms = query_forms[1:] or [primary_form]
+    # 生成带权重的查询变体
+    # 输入: "我家扫地机器人能不能连5G WiFi？"
+    # 输出: [
+    #   ("我家扫地机器人能不能连5G WiFi？", 1.0),   # 原始查询
+    #   ("扫地机器人 连接 5G WiFi", 0.96),           # 标准化查询
+    #   ("扫地机器人 5G WiFi", 0.86),               # 实体对
+    #   ("扫地机器人 接入 5G WiFi", 0.72),           # 同义词改写
+    # ]
+    weighted_forms = build_weighted_recall_query_forms(query_text)
 
-    # ===== 步骤2：遍历每个候选chunk，逐一计算精排final_score =====
+    # 分离主查询和扩展查询
+    primary_form = weighted_forms[0][0] if weighted_forms else query_text
+    expanded_forms = weighted_forms[1:] or weighted_forms[:1] or [(primary_form, 1.0)]
+
+    # ═══════════════════════════════════════════════════════
+    # 【阶段3-2】遍历候选chunk进行精细化打分
+    # ═══════════════════════════════════════════════════════
     for chunk in chunks:
-        # 粗排阶段的BM25关键词分（归一化后的[0,1]分），作为精排公式中的「粗排关键词信号」保留下来
+        # 获取粗排阶段的关键词得分(保留用于后续计算)
         retrieval_keyword_score = chunk.keyword_score or 0.0
 
-        # ===== Small-to-Big核心优化：拼接 matched_child_content 参与评分 =====
-        # 背景：Small-to-Big流程里，现在的chunk往往已经是PARENT大块（600字），但真正命中用户问题的，
-        #   常常是某个几十字的leaf小块内容（存储在matched_child_content字段中）。
-        # 问题：如果只拿PARENT大块600字去算关键词匹配，真正命中的那句信号会被大量无关文字稀释，导致排序不准。
-        # 解决：把matched_child_content拼接到content末尾，一起参与精排评分，
-        #   让「精准命中的leaf内容」在keyword_score/phrase_score里权重更高，避免好结果被埋没。
-        # 注意：加了 not in 判断，如果matched_child_content本来就包含在大块content里（没被稀释），就不用重复拼接。
+        # 构建候选文本(考虑子内容匹配)
         candidate_text = chunk.content
         if chunk.matched_child_content and chunk.matched_child_content not in candidate_text:
             candidate_text = f"{chunk.content}\n\n{chunk.matched_child_content}".strip()
 
-        # ===== 计算5个匹配分维度 =====
-        # ① keyword_score：扩展查询词的词级别重叠匹配分（对所有focused_forms取最大值，哪个扩展形式命中最好就算哪个）
-        #   计算每个扩展形式的keyword_overlap_score（Jaccard/交集占比），取最大的那个
-        keyword_score = max(keyword_overlap_score(form, candidate_text) for form in focused_forms)
-        # ② phrase_score：扩展查询词的短语级别重叠匹配分（连续词命中，比单个词更精准，所以权重更高0.22）
-        #   计算每个扩展形式的phrase_overlap_score（长连续短语命中奖励高），取最大值
-        phrase_score = max(phrase_overlap_score(form, candidate_text) for form in focused_forms)
-        # ③ primary_keyword_score：只用原始查询primary_form算的词级别匹配分（低权重0.04，补充信号）
-        primary_keyword_score = keyword_overlap_score(primary_form, candidate_text)
-        # ④ primary_phrase_score：只用原始查询primary_form算的短语级别匹配分（低权重0.04，补充信号）
-        primary_phrase_score = phrase_overlap_score(primary_form, candidate_text)
-        # ⑤ evidence_score：证据匹配分（权重最大的关键词维度0.35）
-        #   算法思想：从查询中提取「重要实体/核心术语」（如专有名词、型号、技术名词），检查文档中是否有充分证据支撑；
-        #   和普通keyword_overlap的区别：evidence_score会对罕见词/核心词加大权重，对停用词（的/了/怎么）不计分。
-        evidence_score = _evidence_score(query_text, candidate_text)
+        # ─── 计算各维度得分 ───
 
-        # ===== 精排加权融合：8个维度 x 各自权重 = final_score =====
-        # 权重设计思路（凭经验调优+离线评估）：
-        #   - 向量分(0.35) + evidence分(0.35) = 70%，这两项是「语义正确性」的压舱石
-        #   - phrase分(0.22) + keyword分(0.18) = 40%，这两项是「关键词精确匹配」的保障，防止语义分把完全不相关的东西排前面
-        #   - 其余4项(0.12+0.04+0.04) = 20%，是补充信号，防止边界case排序抖动
-        # （权重总和=0.35+0.12+0.04+0.04+0.18+0.22+0.35=1.3，允许>1，鼓励多个维度同时命中时分数叠加奖励）
-        final_score = round(
-            (chunk.vector_score * 0.35)
-            + (retrieval_keyword_score * 0.12)
-            + (primary_keyword_score * 0.04)
-            + (primary_phrase_score * 0.04)
-            + (keyword_score * 0.18)
-            + (phrase_score * 0.22)
-            + (evidence_score * 0.35),
-            6,  # 保留6位小数，避免浮点精度导致排序随机
+        # 维度1: rewrite 关键词得分
+        # 取所有变体中的最高分(加权)
+        keyword_score = max(
+            keyword_overlap_score(form_text, candidate_text) * form_weight
+            for form_text, form_weight in expanded_forms
         )
 
-        # ===== 构造精排后的RetrievedChunk对象（保留所有字段，只更新评分） =====
+        # 维度2: rewrite 短语得分(连续短语匹配)
+        phrase_score = max(
+            phrase_overlap_score(form_text, candidate_text) * form_weight
+            for form_text, form_weight in expanded_forms
+        )
+
+        # 维度3: 原问题关键词得分(低权重,防过拟合)
+        primary_keyword_score = keyword_overlap_score(primary_form, candidate_text)
+
+        # 维度4: 原问题短语得分(低权重,防过拟合)
+        primary_phrase_score = phrase_overlap_score(primary_form, candidate_text)
+
+        # 维度5: 证据得分(知识库置信度)
+        evidence_score = _evidence_score(query_text, candidate_text)
+
+        # 维度6: 关系证据得分(新增)
+        # 解决"词都沾边,但关系不对"的排序问题
+        relation_score = relation_evidence_score(query_text, candidate_text)
+
+        # ═══════════════════════════════════════════════════════
+        # 【阶段3-3】计算最终综合得分
+        # ═══════════════════════════════════════════════════════
+        final_score = round(
+            # 向量相似度得分: 占比 35% (语义基础)
+            (chunk.vector_score * 0.35)
+            # 粗排关键词得分: 占比 12% (保留粗排信号)
+            + (retrieval_keyword_score * 0.12)
+            # 原问题关键词得分: 占比 4% (低权重,防过拟合)
+            + (primary_keyword_score * 0.04)
+            # 原问题短语得分: 占比 4% (低权重,防过拟合)
+            + (primary_phrase_score * 0.04)
+            # rewrite 关键词得分: 占比 16% (标准化问法)
+            + (keyword_score * 0.16)
+            # rewrite 短语得分: 占比 20% (最高!连续短语精度最高)
+            + (phrase_score * 0.20)
+            # 证据得分: 占比 30% (知识库置信度)
+            + (evidence_score * 0.30)
+            # 关系证据得分: 占比 18% (关系命中校验)
+            + (relation_score * 0.18),
+            6,  # 保留6位小数
+        )
+
+        # ═══════════════════════════════════════════════════════
+        # 【阶段3-4】构建结果对象
+        # ═══════════════════════════════════════════════════════
         reranked.append(
             RetrievedChunk(
-                # —— 基础标识/检索/层级字段：原封不动拷贝原chunk的 ——
                 document_id=chunk.document_id,
                 document_name=chunk.document_name,
                 chunk_id=chunk.chunk_id,
@@ -1648,26 +1750,22 @@ def rerank_chunks(
                 child_index=chunk.child_index,
                 table_row_from=chunk.table_row_from,
                 table_row_to=chunk.table_row_to,
-                # —— 评分字段更新 ——
-                vector_score=chunk.vector_score,       # 向量分不变（还是粗排的归一化分）
-                keyword_score=retrieval_keyword_score, # keyword_score保留粗排BM25的归一化分
-                final_score=final_score,               # ⭐final_score是精排后的加权融合分，作为排序第一关键字
-                matched_child_content=chunk.matched_child_content,  # 保留命中leaf溯源内容
+                vector_score=chunk.vector_score,
+                keyword_score=retrieval_keyword_score,
+                final_score=final_score,  # 更新为精排得分
+                matched_child_content=chunk.matched_child_content,
             )
         )
 
-    # ===== 步骤3：按精排final_score降序排序，取Top K返回 =====
-    # 排序优先级（3级从高到低）：
-    #   1. final_score  → 精排加权融合分（最核心的排序依据）
-    #   2. vector_score → 向量语义分（精排分相同时，语义更相关的排前，更稳定可靠）
-    #   3. chunk_index  → 文档内块序号（前两项相同时，文档靠前的块优先，保证排序确定性tie-breaker）
+    # ═══════════════════════════════════════════════════════
+    # 【阶段3-5】排序并返回 top_k
+    # ═══════════════════════════════════════════════════════
     reranked.sort(
         key=lambda item: (item.final_score, item.vector_score, item.chunk_index),
-        reverse=True,  # 整体降序（分数越高越靠前）
+        reverse=True,  # 降序排列
     )
-    # 返回Top K条精排结果；如果候选数不足top_k，Python切片自动取全部，不会报错
-    return reranked[:top_k]
 
+    return reranked[:top_k]
 
 
 

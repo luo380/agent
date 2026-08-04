@@ -39,6 +39,13 @@ def test_build_recall_query_forms_keeps_focused_question_tail():
     assert any(form.startswith("\u652f\u6301") for form in forms[1:])
 
 
+def test_build_recall_query_forms_keeps_colloquial_voice_assistant_entity():
+    forms = build_recall_query_forms("\u6211\u5bb6\u91cc\u6709\u5c0f\u7231\u540c\u5b66\uff0c\u4e0d\u77e5\u9053\u53ef\u4ee5\u63a7\u626b\u5730\u673a\u5668\u4eba\u5417")
+
+    assert any("\u5c0f\u7231\u540c\u5b66" in form for form in forms)
+    assert any("\u626b\u5730\u673a\u5668\u4eba" in form for form in forms)
+
+
 def test_rerank_chunks_boosts_relevant_cjk_phrase_match():
     chunks = [
         RetrievedChunk(
@@ -81,6 +88,36 @@ def test_coarse_recall_score_prefers_answer_chunk_for_longer_prefixed_query():
 
     assert relevant_score > generic_score
 
+
+
+def test_rerank_chunks_prefers_colloquial_voice_assistant_query_match():
+    colloquial_query = "\u6211\u5bb6\u91cc\u6709\u5c0f\u7231\u540c\u5b66\uff0c\u4e0d\u77e5\u9053\u53ef\u4ee5\u63a7\u626b\u5730\u673a\u5668\u4eba\u5417"
+    chunks = [
+        RetrievedChunk(
+            document_id=1,
+            document_name="robot-manual.pdf",
+            chunk_id=301,
+            chunk_index=0,
+            content="\u5e38\u89c1\u7684\u6709\u5c0f\u7231\u540c\u5b66\u3001\u5929\u732b\u7cbe\u7075\u3001Google Assistant \u7b49\u8bed\u97f3\u52a9\u624b\u3002",
+            source_page=3,
+            source_section="page_3",
+            vector_score=0.56,
+        ),
+        RetrievedChunk(
+            document_id=1,
+            document_name="robot-manual.pdf",
+            chunk_id=302,
+            chunk_index=1,
+            content="\u626b\u5730\u673a\u5668\u4eba\u4e00\u822c\u901a\u8fc7 APP \u6216\u6309\u952e\u64cd\u4f5c\uff0c\u53ef\u4ee5\u8fdb\u884c\u6e05\u626b\u548c\u8fd4\u56de\u5145\u7535\u3002",
+            source_page=7,
+            source_section="page_7",
+            vector_score=0.68,
+        ),
+    ]
+
+    reranked = rerank_chunks(colloquial_query, chunks, top_k=2)
+
+    assert reranked[0].chunk_id == 301
 
 
 def test_rerank_chunks_keeps_answer_chunk_in_top_results_for_longer_prefixed_query():
