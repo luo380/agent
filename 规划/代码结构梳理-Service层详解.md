@@ -322,6 +322,7 @@ class QueryIntent:
 GROUNDING_INSTRUCTION 常量：
 给 LLM 的回答铁律："如果知识库上下文已经提供能回答问题的证据，必须基于该证据直接回答；列表、枚举、频率、步骤和参数都算有效证据。只有在上下文没有相关证据时，才能回答'知识库未提及'。"
 
+
 ---
 
 ### 📄 8. query_rewrite.py —— 查询改写（Query Rewrite）
@@ -356,6 +357,75 @@ class RewriteQuery:
 | build_weighted_rewrite_queries(question) | 主入口，串联所有策略，去重，返回带权重的改写列表 |
 
 ---
+
+
+POST /api/rag-langchain-native/ask
+    │
+    ├─ 1. 预检查（创建RagRun、strict_mode检查）
+    │
+    ├─ ★ 2. 查询理解与改写 ← query_rewrite.py 在这里激活！★   输出完全是文本，还没到转向量那一步
+    │    │
+    │    ├─ 2.1 rag_grounding.understand_query(question)
+    │    │     先做结构化理解，输出 QueryIntent：
+    │    │       question_type: yes_no/how_to/list/...
+    │    │       subject_terms: ["扫地机器人"]
+    │    │       object_terms:  ["5G WiFi"]
+    │    │       relation:      "连接"
+    │    │       （这是改写的原材料）
+    │    │
+    │    └─ 2.2 build_weighted_rewrite_queries(question)  每个chunk对象里同时带着向量字段和分数字段  **返回的是「块对象」，分数只是对象里的一个字段**
+    │          │
+    │          ├─ 输入：用户原问题 + QueryIntent
+    │          │
+    │          ├─ 输出：6~10条 RewriteQuery（带权重）
+    │          │   例：
+    │          │   ├─ 1.00 original      "我家扫地机器人能不能连5G WiFi？"
+    │          │   ├─ 0.96 normalized    "扫地机器人 连接 5G WiFi"
+    │          │   ├─ 0.93 entity_rel    "扫地机器人 连接 5G WiFi"
+    │          │   ├─ 0.86 entity_pair   "扫地机器人 5G WiFi"
+    │          │   ├─ 0.72 synonym       "扫地机器人 接入 5G WiFi"
+    │          │   └─ 0.62 type_based    "扫地机器人 5G WiFi 支持情况"
+    │          │
+    │          └─ 内部两个子函数：
+    │              ├─ _build_relation_rewrites()
+    │              │   主体+关系+客体 各种排列组合 + 同义词替换
+    │              │
+    │              └─ _build_question_type_rewrites()
+    │                  针对 yes_no/how_to/... 改成文档标题风格
+    │
+    ├─ 3. 混合检索（核心检索层）
+    │    search_similar_chunks()
+    │    → 会利用第2步的多条改写：
+    │       · 向量检索时：重点用 normalized_query 那条（语义更干净）
+    │       · BM25关键词检索时：多条改写的 token 并集，增加覆盖度
+    │       · 重排时：根据权重加权融合
+    │
+    ├
+    ├─ ★ 4. Grounding判定 ← rag_grounding.py 在这里激活！★
+    │    │
+    │    ├─ 4.1 evidence_match_score()
+    │    │     检查：检索到的chunks里，有没有出现问题的焦点关键词？
+    │    │     输出：0.0~1.0 分数
+    │    │
+    │    ├─ 4.2 relation_evidence_score()
+    │    │     检查：不仅是实体存在，「关系词」有没有匹配？
+    │    │     （例：问"支持5G吗"，不能只看到"5G"就算，
+    │    │       必须有"支持/兼容/连接"这种词才算有证据）
+    │    │
+    │    └─ 4.3 build_direct_grounded_answer()
+    │          │
+    │          ├─ 分支A：分数 ≥ 阈值（证据足够强）
+    │          │   → 直接用规则拼出答案返回
+    │          │   → 走不到LLM（又快又准，0幻觉）
+    │          │
+    │          └─ 分支B：分数 < 阈值（证据不够）
+    │              → 继续往下走第5步（交给LLM生成）
+    │
+    ├─ 5. 组装 Prompt（需要LLM生成时才会走到这）
+    │
+    ├─ 6. LangChain LCEL Chain 流式生成
+    │
+    └─ 7. 整理输出（引用、检索明细、trace更新）
 
 ### 📄 9. rag_trace.py —— RAG 运行链路追踪
 
