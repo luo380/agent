@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>团队知识库 · 检索与个人中心 UI Mockup</title>
+<style>
+  :root{
+    --primary:#2B6FFF;--primary-hover:#1E5AE6;--primary-bg:#E8F1FF;
+    --success:#00B85C;--success-bg:#DBFAE0;
+    --warning:#E6A23C;--warning-bg:#FFF4D6;
+    --danger:#F5483B;--danger-bg:#FFE6E3;
+    --purple:#7C5CFC;--purple-bg:#EFE9FF;
+    --text:#1F2937;--text-secondary:#6B7280;--text-tertiary:#9CA3AF;
+    --border:#E5E7EB;--border-light:#F0F1F3;
+    --bg:#F5F6F8;--bg-soft:#F9FAFB;--card:#FFFFFF;
+    --radius-sm:6px;--radius:8px;--radius-lg:12px;--radius-xl:16px;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.04);
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+    --shadow-md:0 4px 12px rgba(0,0,0,.08);
+    --shadow-lg:0 10px 40px rgba(0,0,0,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;background:#EDEFF3;color:var(--text);line-height:1.5;font-size:14px;padding:24px;-webkit-font-smoothing:antialiased}
+  .doc-head{text-align:center;margin:8px 0 32px}
+  .doc-head h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  .doc-head p{color:var(--text-secondary);font-size:13px}
+  .page{background:var(--bg);border-radius:var(--radius-xl);box-shadow:var(--shadow-lg);overflow:hidden;margin-bottom:40px;max-width:1400px;margin-left:auto;margin-right:auto}
+  .page-banner{background:linear-gradient(135deg,#0EA5E9 0%,#67C3F3 100%);color:#fff;padding:14px 24px;display:flex;align-items:center;gap:12px}
+  .page-banner.orange{background:linear-gradient(135deg,#FF7A59 0%,#FFB088 100%)}
+  .page-banner.purple{background:linear-gradient(135deg,#7C5CFC 0%,#A78BFA 100%)}
+  .page-banner.gray{background:linear-gradient(135deg,#6B7280 0%,#9CA3AF 100%)}
+  .page-banner .badge{background:rgba(255,255,255,.2);padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .page-banner .ptitle{font-size:16px;font-weight:600}
+  .page-banner .pdesc{font-size:13px;opacity:.85;margin-left:auto}
+  .app{display:grid;grid-template-columns:220px 1fr;min-height:720px;background:var(--card)}
+  .topnav{grid-column:1/-1;height:52px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:24px}
+  .logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+  .logo .mark{width:28px;height:28px;background:linear-gradient(135deg,#2B6FFF,#5B8CFF);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700}
+  .nav-tabs{display:flex;gap:4px}
+  .nav-tab{padding:6px 14px;border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;font-size:14px}
+  .nav-tab.active{background:var(--primary-bg);color:var(--primary);font-weight:600}
+  .topnav-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .search-box{display:flex;align-items:center;gap:8px;background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);padding:6px 12px;width:260px;color:var(--text-tertiary);font-size:13px}
+  .search-box .kbd{margin-left:auto;background:#fff;border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--text-tertiary)}
+  .icon-btn{width:32px;height:32px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;color:var(--text-secondary);cursor:pointer;font-size:16px}
+  .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#FF7A59,#FFB088);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}
+  .sidebar{background:#FAFBFC;border-right:1px solid var(--border);padding:16px 12px;overflow-y:auto}
+  .sb-section{margin-bottom:20px}
+  .sb-title{font-size:11px;color:var(--text-tertiary);font-weight:600;padding:6px 10px;text-transform:uppercase;letter-spacing:.4px}
+  .sb-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--radius-sm);color:var(--text-secondary);font-size:13px;cursor:pointer}
+  .sb-item:hover{background:#F0F2F5}
+  .sb-item.active{background:var(--primary-bg);color:var(--primary);font-weight:600}
+  .sb-item .ico{width:16px;height:16px;flex-shrink:0;font-size:14px}
+  .sb-item .count{margin-left:auto;background:var(--bg-soft);color:var(--text-tertiary);border-radius:999px;padding:1px 7px;font-size:11px}
+  .sb-item.active .count{background:#fff;color:var(--primary)}
+  .usage-card{margin-top:12px;padding:12px;background:linear-gradient(135deg,#FFF9E6,#FFF4D6);border-radius:var(--radius)}
+  .usage-card .label{font-size:12px;color:var(--text-secondary)}
+  .usage-card .num{font-size:20px;font-weight:700;margin:4px 0}
+  .usage-bar{height:6px;background:rgba(0,0,0,.06);border-radius:999px;overflow:hidden}
+  .usage-bar .fill{width:65%;height:100%;background:var(--warning)}
+  .main{padding:24px 32px;overflow-y:auto;background:var(--bg)}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;background:#fff;color:var(--text);white-space:nowrap}
+  .btn:hover{background:var(--bg-soft)}
+  .btn-primary{background:var(--primary);color:#fff}
+  .btn-outline{border-color:var(--border);color:var(--text)}
+  .btn-ghost{color:var(--text-secondary)}
+  .btn-danger{background:var(--danger);color:#fff}
+  .btn-danger-outline{border-color:var(--danger);color:var(--danger)}
+  .tag{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:500}
+  .tag-success{background:var(--success-bg);color:var(--success)}
+  .tag-warning{background:var(--warning-bg);color:var(--warning)}
+  .tag-primary{background:var(--primary-bg);color:var(--primary)}
+  .tag-default{background:var(--bg-soft);color:var(--text-secondary)}
+  .tag-danger{background:var(--danger-bg);color:var(--danger)}
+  .highlight{background:#FFF3B0;color:#92600A;padding:0 3px;border-radius:3px;font-weight:500}
+  .divider-label{display:flex;align-items:center;gap:12px;color:var(--text-tertiary);font-size:12px;margin:20px 0 12px}
+  .divider-label::before,.divider-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+  /* 大搜索框 */
+  .big-search{background:#fff;border-radius:var(--radius-lg);box-shadow:var(--shadow-md);padding:6px 6px 6px 20px;display:flex;align-items:center;gap:12px;margin-bottom:20px;border:2px solid var(--primary)}
+  .big-search .sicon{font-size:20px;color:var(--primary)}
+  .big-search input{flex:1;border:none;outline:none;font-size:16px;color:var(--text);background:transparent}
+  .big-search .clear{color:var(--text-tertiary);cursor:pointer;font-size:16px;padding:4px}
+  .big-search .search-btn{background:var(--primary);color:#fff;padding:8px 20px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer}
+
+  /* 搜索布局 */
+  .search-layout{display:grid;grid-template-columns:220px 1fr;gap:20px}
+  .filter-panel{background:#fff;border-radius:var(--radius-lg);padding:16px;box-shadow:var(--shadow-sm);height:fit-content}
+  .filter-group{margin-bottom:20px}
+  .filter-group:last-child{margin-bottom:0}
+  .filter-group .ftitle{font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+  .filter-group .fitem{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;color:var(--text-secondary);cursor:pointer}
+  .filter-group .fitem:hover{color:var(--primary)}
+  .filter-group .fitem .fcount{margin-left:auto;font-size:11px;color:var(--text-tertiary)}
+  .filter-group .fitem.active{color:var(--primary);font-weight:500}
+  .radio{width:14px;height:14px;border:1.5px solid var(--border);border-radius:50%;flex-shrink:0}
+  .radio.checked{border:4px solid var(--primary);background:#fff}
+  .checkbox{width:14px;height:14px;border:1.5px solid var(--border);border-radius:3px;flex-shrink:0}
+  .checkbox.checked{background:var(--primary);border-color:var(--primary);position:relative}
+  .checkbox.checked::after{content:'✓';color:#fff;font-size:10px;position:absolute;top:-2px;left:1px}
+
+  /* 搜索结果 */
+  .result-tabs{display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border)}
+  .result-tab{padding:8px 16px;font-size:13px;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500}
+  .result-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+  .result-tab .num{font-size:11px;color:var(--text-tertiary);margin-left:4px}
+
+  .result-item{background:#fff;border-radius:var(--radius-lg);padding:16px 20px;box-shadow:var(--shadow-sm);margin-bottom:10px;cursor:pointer;transition:all .2s}
+  .result-item:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+  .result-item .ricon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;float:left;margin-right:14px}
+  .result-item .rtitle{font-size:15px;font-weight:600;margin-bottom:4px;line-height:1.4}
+  .result-item .rtitle:hover{color:var(--primary)}
+  .result-item .rexcerpt{font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .result-item .rmeta{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text-tertiary);flex-wrap:wrap}
+  .result-item .rmeta .dot{width:3px;height:3px;border-radius:50%;background:var(--text-tertiary)}
+  .result-item .raction{float:right;color:var(--text-tertiary);cursor:pointer;padding:4px;border-radius:4px}
+
+  /* 收藏卡片 */
+  .fav-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .fav-card{background:#fff;border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow-sm);cursor:pointer;transition:all .2s;position:relative}
+  .fav-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+  .fav-card .fstar{position:absolute;top:14px;right:14px;color:var(--warning);font-size:16px}
+  .fav-card .ficon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px}
+  .fav-card .ftitle{font-size:14px;font-weight:600;margin-bottom:6px;line-height:1.4}
+  .fav-card .fdesc{font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .fav-card .fmeta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary)}
+  .fav-card .fmeta .dot{width:3px;height:3px;border-radius:50%;background:var(--text-tertiary)}
+
+  /* 共享列表 */
+  .share-item{background:#fff;border-radius:var(--radius-lg);padding:16px 20px;box-shadow:var(--shadow-sm);margin-bottom:10px;display:flex;align-items:center;gap:14px}
+  .share-item .sicon{width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+  .share-item .sinfo{flex:1;min-width:0}
+  .share-item .stitle{font-size:14px;font-weight:600;margin-bottom:4px}
+  .share-item .smeta{font-size:12px;color:var(--text-tertiary);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .share-item .smeta .dot{width:3px;height:3px;border-radius:50%;background:var(--text-tertiary)}
+  .share-item .from-user{display:flex;align-items:center;gap:6px}
+  .share-item .from-user .avatar{width:20px;height:20px;font-size:9px}
+  .share-item .sactions{display:flex;gap:8px;flex-shrink:0}
+
+  /* 回收站 */
+  .recycle-banner{background:var(--warning-bg);border:1px solid #F0D860;border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text)}
+  .recycle-banner .ricon{font-size:18px}
+  .recycle-banner .rtext{flex:1}
+  .recycle-banner .rtext strong{color:var(--warning)}
+
+  .recycle-item{background:#fff;border-radius:var(--radius-lg);padding:14px 20px;box-shadow:var(--shadow-sm);margin-bottom:8px;display:flex;align-items:center;gap:14px}
+  .recycle-item .ricon{width:36px;height:36px;border-radius:8px;background:var(--bg-soft);display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--text-tertiary);flex-shrink:0}
+  .recycle-item .rinfo{flex:1;min-width:0}
+  .recycle-item .rname{font-size:14px;font-weight:500;margin-bottom:3px;color:var(--text-secondary)}
+  .recycle-item .rmeta{font-size:11px;color:var(--text-tertiary);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .recycle-item .rmeta .dot{width:3px;height:3px;border-radius:50%;background:var(--text-tertiary)}
+  .recycle-item .countdown{font-size:11px;color:var(--danger);font-weight:500}
+  .recycle-item .ractions{display:flex;gap:8px;flex-shrink:0}
+
+  /* 通用页面标题 */
+  .page-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .page-title-row h2{font-size:20px;font-weight:700}
+  .page-title-row .sub{font-size:13px;color:var(--text-secondary);margin-top:4px}
+  .page-title-row .right{display:flex;gap:8px;align-items:center}
+
+  .filter-chip{padding:4px 12px;border-radius:999px;font-size:12px;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
+  .filter-chip.active{background:var(--primary-bg);color:var(--primary);border-color:var(--primary)}
+
+  .stat-mini{display:inline-flex;align-items:baseline;gap:4px}
+  .stat-mini .num{font-size:20px;font-weight:700;color:var(--primary)}
+  .stat-mini .label{font-size:12px;color:var(--text-secondary)}
+</style>
+</head>
+<body>
+
+<div class="doc-head">
+  <h1>检索与个人中心 · 4 件套</h1>
+  <p>全局搜索结果 / 我的收藏 / 与我共享 / 回收站</p>
+</div>
+
+<!-- ========== 页面 6：全局搜索结果 ========== -->
+<section class="page">
+  <div class="page-banner">
+    <span class="badge">06</span>
+    <span class="ptitle">全局搜索结果页</span>
+    <span class="pdesc">顶部搜索框触发：大搜索框 + 左侧筛选 + 结果列表（关键词高亮）</span>
+  </div>
+  <div class="app">
+    <div class="topnav">
+      <div class="logo"><div class="mark">K</div>知识中枢</div>
+      <div class="nav-tabs">
+        <span class="nav-tab">工作台</span>
+        <span class="nav-tab active">知识库</span>
+        <span class="nav-tab">智能助手</span>
+      </div>
+      <div class="topnav-right">
+        <div class="icon-btn">?</div>
+        <div class="avatar">李</div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sb-section">
+        <div class="sb-title">我的空间</div>
+        <div class="sb-item"><span class="ico">📁</span>团队知识库<span class="count">128</span></div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间导航</div>
+        <div class="sb-item"><span class="ico">📄</span>全部文档</div>
+        <div class="sb-item"><span class="ico">🎨</span>产品设计</div>
+        <div class="sb-item"><span class="ico">⚙️</span>技术研发</div>
+        <div class="sb-item"><span class="ico">📊</span>运营手册</div>
+        <div class="sb-item"><span class="ico">👥</span>客户资料</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">快捷入口</div>
+        <div class="sb-item"><span class="ico">🕒</span>最近更新</div>
+        <div class="sb-item"><span class="ico">⭐</span>我的收藏</div>
+        <div class="sb-item"><span class="ico">🔗</span>与我共享</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间设置</div>
+        <div class="sb-item"><span class="ico">🔐</span>成员与权限</div>
+        <div class="sb-item"><span class="ico">🗑️</span>回收站</div>
+      </div>
+      <div class="usage-card">
+        <div class="label">本周知识库用量</div>
+        <div class="num">3.2 GB / 5 GB</div>
+        <div class="usage-bar"><div class="fill"></div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="big-search">
+        <span class="sicon">🔍</span>
+        <input type="text" value="用户访谈" readonly>
+        <span class="clear">✕</span>
+        <button class="search-btn">搜索</button>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:13px;color:var(--text-secondary)">
+        <span>找到约 <strong style="color:var(--text)">18</strong> 条结果</span>
+        <span style="color:var(--text-tertiary)">·</span>
+        <span>耗时 0.23 秒</span>
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <span class="filter-chip">🕒 最近一周</span>
+          <span class="filter-chip">👤 全部作者</span>
+          <span class="filter-chip">📁 全部类型</span>
+        </span>
+      </div>
+
+      <div class="search-layout">
+        <div class="filter-panel">
+          <div class="filter-group">
+            <div class="ftitle">知识库范围</div>
+            <div class="fitem active"><div class="radio checked"></div>全部知识库<span class="fcount">18</span></div>
+            <div class="fitem"><div class="radio"></div>产品设计<span class="fcount">12</span></div>
+            <div class="fitem"><div class="radio"></div>技术研发<span class="fcount">3</span></div>
+            <div class="fitem"><div class="radio"></div>运营手册<span class="fcount">2</span></div>
+            <div class="fitem"><div class="radio"></div>客户资料<span class="fcount">1</span></div>
+          </div>
+          <div class="filter-group">
+            <div class="ftitle">文档类型</div>
+            <div class="fitem"><div class="checkbox checked"></div>文档<span class="fcount">14</span></div>
+            <div class="fitem"><div class="checkbox checked"></div>表格<span class="fcount">2</span></div>
+            <div class="fitem"><div class="checkbox"></div>附件<span class="fcount">1</span></div>
+            <div class="fitem"><div class="checkbox"></div>评论<span class="fcount">1</span></div>
+          </div>
+          <div class="filter-group">
+            <div class="ftitle">时间范围</div>
+            <div class="fitem"><div class="radio"></div>今天</div>
+            <div class="fitem"><div class="radio checked"></div>最近一周</div>
+            <div class="fitem"><div class="radio"></div>最近一月</div>
+            <div class="fitem"><div class="radio"></div>自定义</div>
+          </div>
+          <div class="filter-group">
+            <div class="ftitle">作者</div>
+            <div class="fitem"><div class="checkbox checked"></div>张明<span class="fcount">6</span></div>
+            <div class="fitem"><div class="checkbox checked"></div>王芳<span class="fcount">4</span></div>
+            <div class="fitem"><div class="checkbox"></div>陈晨<span class="fcount">5</span></div>
+            <div class="fitem"><div class="checkbox"></div>刘洋<span class="fcount">3</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="result-tabs">
+            <div class="result-tab active">全部<span class="num">18</span></div>
+            <div class="result-tab">文档<span class="num">14</span></div>
+            <div class="result-tab">表格<span class="num">2</span></div>
+            <div class="result-tab">附件<span class="num">1</span></div>
+            <div class="result-tab">评论<span class="num">1</span></div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--primary-bg);color:var(--primary)">📄</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle"><span class="highlight">用户访谈</span>与研究方法</div>
+              <div class="rexcerpt">本文档梳理了<span class="highlight">用户访谈</span>的完整方法论：从访谈前的目标设定与提纲撰写，到访谈中的提问技巧与记录规范，再到访谈后的整理与洞察提炼。重点介绍了半结构化<span class="highlight">访谈</span>、情境访谈、影子跟访三种方式…</div>
+              <div class="rmeta">
+                <span>📁 产品设计 / 用户研究</span>
+                <span class="dot"></span>
+                <span>👤 张明</span>
+                <span class="dot"></span>
+                <span>🕒 2025-08-05</span>
+                <span class="dot"></span>
+                <span>👁️ 248 次阅读</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--success-bg);color:var(--success)">📊</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle"><span class="highlight">用户访谈</span>实录与洞察 - Q3</div>
+              <div class="rexcerpt">本季度共完成 <span class="highlight">用户访谈</span> 12 场，覆盖 3 类核心用户画像。通过对访谈记录的整理，提炼出 8 个关键痛点与 5 个机会点。本文档包含完整的访谈逐字稿、行为频率统计及优先级排序…</div>
+              <div class="rmeta">
+                <span>📁 产品设计 / 用户研究</span>
+                <span class="dot"></span>
+                <span>👤 陈晨</span>
+                <span class="dot"></span>
+                <span>🕒 2025-07-22</span>
+                <span class="dot"></span>
+                <span>👁️ 156 次阅读</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--purple-bg);color:var(--purple)">🔬</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle"><span class="highlight">用户</span>研究方法论对比</div>
+              <div class="rexcerpt">对比了 5 种主流<span class="highlight">用户</span>研究方法的适用场景、成本投入与产出质量：包括<span class="highlight">用户访谈</span>、问卷调查、可用性测试、A/B 测试与数据分析。建议在不同产品阶段组合使用…</div>
+              <div class="rmeta">
+                <span>📁 产品设计 / 用户研究</span>
+                <span class="dot"></span>
+                <span>👤 王芳</span>
+                <span class="dot"></span>
+                <span>🕒 2025-07-15</span>
+                <span class="dot"></span>
+                <span>👁️ 89 次阅读</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--warning-bg);color:var(--warning)">📋</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle"><span class="highlight">用户访谈</span>提纲模板 v2</div>
+              <div class="rexcerpt">可直接复用的<span class="highlight">用户访谈</span>提纲模板，包含破冰、主题深入、收尾三段式结构。支持按研究目标自定义问题分支，适用于 B 端与 C 端产品的探索性研究…</div>
+              <div class="rmeta">
+                <span>📁 产品设计 / 模板库</span>
+                <span class="dot"></span>
+                <span>👤 张明</span>
+                <span class="dot"></span>
+                <span>🕒 2025-06-30</span>
+                <span class="dot"></span>
+                <span>👁️ 312 次阅读</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--bg-soft);color:var(--text-secondary)">💬</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle">评论 · 在「<span class="highlight">用户访谈</span>与研究方法」中</div>
+              <div class="rexcerpt">关于"沉默 3-5 秒"这一点，新手研究员往往不敢停顿，但实际效果非常好。建议在<span class="highlight">用户访谈</span>培训里强化这点，另外可以补充一些反例对比…</div>
+              <div class="rmeta">
+                <span>💬 王芳 的评论</span>
+                <span class="dot"></span>
+                <span>🕒 2 小时前</span>
+                <span class="dot"></span>
+                <span>👍 3</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-item">
+            <div class="ricon" style="background:var(--danger-bg);color:var(--danger)">📎</div>
+            <span class="raction">···</span>
+            <div style="overflow:hidden">
+              <div class="rtitle"><span class="highlight">用户访谈</span>录音 - 20250805.mp3</div>
+              <div class="rexcerpt">附件 · 12.4 MB · 时长 38:22 · 自动转写已完成。该录音为第 8 场<span class="highlight">用户访谈</span>，受访者为企业版高级用户，主要讨论搜索功能的使用体验…</div>
+              <div class="rmeta">
+                <span>📁 产品设计 / 用户研究</span>
+                <span class="dot"></span>
+                <span>👤 张明</span>
+                <span class="dot"></span>
+                <span>🕒 2025-08-05</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="text-align:center;padding:20px 0">
+            <button class="btn btn-outline">加载更多结果（还有 12 条）</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ========== 页面 7：我的收藏 ========== -->
+<section class="page">
+  <div class="page-banner orange">
+    <span class="badge">07</span>
+    <span class="ptitle">我的收藏</span>
+    <span class="pdesc">左侧"我的收藏"入口：收藏的文档卡片网格 + 分组 + 搜索</span>
+  </div>
+  <div class="app">
+    <div class="topnav">
+      <div class="logo"><div class="mark">K</div>知识中枢</div>
+      <div class="nav-tabs">
+        <span class="nav-tab">工作台</span>
+        <span class="nav-tab active">知识库</span>
+        <span class="nav-tab">智能助手</span>
+      </div>
+      <div class="topnav-right">
+        <div class="search-box">🔍 搜索文档、知识库、成员…<span class="kbd">⌘K</span></div>
+        <div class="icon-btn">?</div>
+        <div class="avatar">李</div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sb-section">
+        <div class="sb-title">我的空间</div>
+        <div class="sb-item"><span class="ico">📁</span>团队知识库<span class="count">128</span></div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间导航</div>
+        <div class="sb-item"><span class="ico">📄</span>全部文档</div>
+        <div class="sb-item"><span class="ico">🎨</span>产品设计</div>
+        <div class="sb-item"><span class="ico">⚙️</span>技术研发</div>
+        <div class="sb-item"><span class="ico">📊</span>运营手册</div>
+        <div class="sb-item"><span class="ico">👥</span>客户资料</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">快捷入口</div>
+        <div class="sb-item"><span class="ico">🕒</span>最近更新</div>
+        <div class="sb-item active"><span class="ico">⭐</span>我的收藏<span class="count">24</span></div>
+        <div class="sb-item"><span class="ico">🔗</span>与我共享</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间设置</div>
+        <div class="sb-item"><span class="ico">🔐</span>成员与权限</div>
+        <div class="sb-item"><span class="ico">🗑️</span>回收站</div>
+      </div>
+      <div class="usage-card">
+        <div class="label">本周知识库用量</div>
+        <div class="num">3.2 GB / 5 GB</div>
+        <div class="usage-bar"><div class="fill"></div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-title-row">
+        <div>
+          <h2>⭐ 我的收藏</h2>
+          <div class="sub">你收藏了 <strong>24</strong> 篇文档 · 按收藏时间排序</div>
+        </div>
+        <div class="right">
+          <span class="filter-chip active">卡片视图</span>
+          <span class="filter-chip">列表视图</span>
+          <span class="filter-chip">📁 全部分类</span>
+          <span class="filter-chip">🕒 最近收藏 ▾</span>
+        </div>
+      </div>
+
+      <div class="divider-label">本周收藏 · 3 篇</div>
+      <div class="fav-grid">
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--primary-bg);color:var(--primary)">📄</div>
+          <div class="ftitle">用户访谈与研究方法</div>
+          <div class="fdesc">梳理了用户访谈的完整方法论：目标设定、提纲撰写、提问技巧、整理与洞察提炼。包含三种访谈方式的适用场景对比。</div>
+          <div class="fmeta">
+            <span>📁 产品设计</span>
+            <span class="dot"></span>
+            <span>👤 张明</span>
+            <span class="dot"></span>
+            <span>⭐ 2 天前</span>
+          </div>
+        </div>
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--success-bg);color:var(--success)">🎯</div>
+          <div class="ftitle">Q3 产品需求评审纪要</div>
+          <div class="fdesc">本次评审覆盖 8 个需求项，其中 5 项通过、2 项待补充资料、1 项暂缓。包含优先级排序与排期安排。</div>
+          <div class="fmeta">
+            <span>📁 产品设计</span>
+            <span class="dot"></span>
+            <span>👤 王芳</span>
+            <span class="dot"></span>
+            <span>⭐ 3 天前</span>
+          </div>
+        </div>
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--purple-bg);color:var(--purple)">📋</div>
+          <div class="ftitle">需求文档 PRD 模板 v3</div>
+          <div class="fdesc">标准 PRD 模板，包含背景、目标、用户场景、功能方案、交互流程、数据埋点、排期等完整模块，支持一键创建。</div>
+          <div class="fmeta">
+            <span>📁 产品设计 / 模板库</span>
+            <span class="dot"></span>
+            <span>👤 张明</span>
+            <span class="dot"></span>
+            <span>⭐ 5 天前</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider-label">更早收藏 · 21 篇</div>
+      <div class="fav-grid">
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--warning-bg);color:var(--warning)">📈</div>
+          <div class="ftitle">运营周报标准格式</div>
+          <div class="fdesc">统一运营周报格式：进展、数据指标、风险、下周计划，支持数据图表自动嵌入。</div>
+          <div class="fmeta">
+            <span>📁 运营手册</span>
+            <span class="dot"></span>
+            <span>👤 赵雪</span>
+            <span class="dot"></span>
+            <span>⭐ 1 周前</span>
+          </div>
+        </div>
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:#E0F2FF;color:#0EA5E9">⚙️</div>
+          <div class="ftitle">技术架构选型指南</div>
+          <div class="fdesc">对比微服务、单体、Serverless 三种架构的适用场景，含成本、维护、扩展性维度的评分矩阵。</div>
+          <div class="fmeta">
+            <span>📁 技术研发</span>
+            <span class="dot"></span>
+            <span>👤 刘洋</span>
+            <span class="dot"></span>
+            <span>⭐ 1 周前</span>
+          </div>
+        </div>
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--danger-bg);color:var(--danger)">📊</div>
+          <div class="ftitle">用户行为数据汇总表</div>
+          <div class="fdesc">Q2 用户行为数据汇总，含日活、留存、核心功能使用率等关键指标，按用户画像分组统计。</div>
+          <div class="fmeta">
+            <span>📁 产品设计</span>
+            <span class="dot"></span>
+            <span>👤 陈晨</span>
+            <span class="dot"></span>
+            <span>⭐ 2 周前</span>
+          </div>
+        </div>
+        <div class="fav-card">
+          <div class="fstar">⭐</div>
+          <div class="ficon" style="background:var(--primary-bg);color:var(--primary)">📚</div>
+          <div class="ftitle">SOP 操作手册编写规范</div>
+          <div class="fdesc">标准化操作手册的编写规范，含步骤化结构、图文混排、视频嵌入、版本管理等要求。</div>
+          <div class="fmeta">
+            <span>📁 运营手册</span>
+            <span class="dot"></span>
+            <span>👤 赵雪</span>
+            <span class="dot"></span>
+            <span>⭐ 3 周前</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="text-align:center;padding:20px 0">
+        <button class="btn btn-outline">加载更多收藏（还有 17 篇）</button>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ========== 页面 8：与我共享 ========== -->
+<section class="page">
+  <div class="page-banner purple">
+    <span class="badge">08</span>
+    <span class="ptitle">与我共享</span>
+    <span class="pdesc">左侧"与我共享"入口：别人分享给我的文档 + 分享人 + 权限 + 操作</span>
+  </div>
+  <div class="app">
+    <div class="topnav">
+      <div class="logo"><div class="mark">K</div>知识中枢</div>
+      <div class="nav-tabs">
+        <span class="nav-tab">工作台</span>
+        <span class="nav-tab active">知识库</span>
+        <span class="nav-tab">智能助手</span>
+      </div>
+      <div class="topnav-right">
+        <div class="search-box">🔍 搜索文档、知识库、成员…<span class="kbd">⌘K</span></div>
+        <div class="icon-btn">?</div>
+        <div class="avatar">李</div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sb-section">
+        <div class="sb-title">我的空间</div>
+        <div class="sb-item"><span class="ico">📁</span>团队知识库<span class="count">128</span></div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间导航</div>
+        <div class="sb-item"><span class="ico">📄</span>全部文档</div>
+        <div class="sb-item"><span class="ico">🎨</span>产品设计</div>
+        <div class="sb-item"><span class="ico">⚙️</span>技术研发</div>
+        <div class="sb-item"><span class="ico">📊</span>运营手册</div>
+        <div class="sb-item"><span class="ico">👥</span>客户资料</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">快捷入口</div>
+        <div class="sb-item"><span class="ico">🕒</span>最近更新</div>
+        <div class="sb-item"><span class="ico">⭐</span>我的收藏</div>
+        <div class="sb-item active"><span class="ico">🔗</span>与我共享<span class="count">9</span></div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间设置</div>
+        <div class="sb-item"><span class="ico">🔐</span>成员与权限</div>
+        <div class="sb-item"><span class="ico">🗑️</span>回收站</div>
+      </div>
+      <div class="usage-card">
+        <div class="label">本周知识库用量</div>
+        <div class="num">3.2 GB / 5 GB</div>
+        <div class="usage-bar"><div class="fill"></div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-title-row">
+        <div>
+          <h2>🔗 与我共享</h2>
+          <div class="sub">别人直接分享或通过链接分享给你的文档 · 共 <strong>9</strong> 篇</div>
+        </div>
+        <div class="right">
+          <span class="filter-chip active">全部</span>
+          <span class="filter-chip">可编辑 (4)</span>
+          <span class="filter-chip">只读 (5)</span>
+          <span class="filter-chip">🕒 最近分享 ▾</span>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:var(--primary-bg);color:var(--primary)">📄</div>
+        <div class="sinfo">
+          <div class="stitle">Q3 产品需求评审纪要</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#00B85C,#5BD887);width:18px;height:18px;font-size:8px">王</div>王芳</span>
+            <span class="dot"></span>
+            <span>2 小时前分享</span>
+            <span class="dot"></span>
+            <span>📁 产品设计</span>
+            <span class="dot"></span>
+            <span class="tag tag-success">✏️ 可编辑</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:var(--success-bg);color:var(--success)">📊</div>
+        <div class="sinfo">
+          <div class="stitle">用户行为数据汇总.xlsx</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#FF7A59,#FFB088);width:18px;height:18px;font-size:8px">陈</div>陈晨</span>
+            <span class="dot"></span>
+            <span>昨天分享</span>
+            <span class="dot"></span>
+            <span>📁 产品设计</span>
+            <span class="dot"></span>
+            <span class="tag tag-default">👁️ 只读</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:var(--purple-bg);color:var(--purple)">🔬</div>
+        <div class="sinfo">
+          <div class="stitle">Q2 用户访谈实录与洞察</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#FF7A59,#FFB088);width:18px;height:18px;font-size:8px">陈</div>陈晨</span>
+            <span class="dot"></span>
+            <span>3 天前分享</span>
+            <span class="dot"></span>
+            <span>📁 产品设计 / 用户研究</span>
+            <span class="dot"></span>
+            <span class="tag tag-success">✏️ 可编辑</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:#E0F2FF;color:#0EA5E9">⚙️</div>
+        <div class="sinfo">
+          <div class="stitle">微服务架构改造方案</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#7C5CFC,#A78BFA);width:18px;height:18px;font-size:8px">刘</div>刘洋</span>
+            <span class="dot"></span>
+            <span>5 天前分享</span>
+            <span class="dot"></span>
+            <span>📁 技术研发</span>
+            <span class="dot"></span>
+            <span class="tag tag-success">✏️ 可编辑</span>
+            <span class="dot"></span>
+            <span style="color:var(--warning)">💬 3 条新评论</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:var(--warning-bg);color:var(--warning)">📈</div>
+        <div class="sinfo">
+          <div class="stitle">8 月运营月报</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#E6A23C,#F0C060);width:18px;height:18px;font-size:8px">赵</div>赵雪</span>
+            <span class="dot"></span>
+            <span>1 周前分享</span>
+            <span class="dot"></span>
+            <span>📁 运营手册</span>
+            <span class="dot"></span>
+            <span class="tag tag-default">👁️ 只读</span>
+            <span class="dot"></span>
+            <span>🔗 链接分享</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div class="share-item">
+        <div class="sicon" style="background:var(--danger-bg);color:var(--danger)">📎</div>
+        <div class="sinfo">
+          <div class="stitle">客户反馈原始记录 - 8月</div>
+          <div class="smeta">
+            <span class="from-user"><div class="avatar" style="background:linear-gradient(135deg,#0EA5E9,#67C3F3);width:18px;height:18px;font-size:8px">孙</div>孙磊</span>
+            <span class="dot"></span>
+            <span>2 周前分享</span>
+            <span class="dot"></span>
+            <span>📁 客户资料</span>
+            <span class="dot"></span>
+            <span class="tag tag-default">👁️ 只读</span>
+            <span class="dot"></span>
+            <span style="color:var(--danger)">⏰ 30 天后到期</span>
+          </div>
+        </div>
+        <div class="sactions">
+          <button class="btn btn-outline">打开</button>
+          <button class="btn btn-ghost">···</button>
+        </div>
+      </div>
+
+      <div style="text-align:center;padding:20px 0">
+        <button class="btn btn-outline">加载更多（还有 3 篇）</button>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ========== 页面 9：回收站 ========== -->
+<section class="page">
+  <div class="page-banner gray">
+    <span class="badge">09</span>
+    <span class="ptitle">回收站</span>
+    <span class="pdesc">左侧"回收站"入口：已删除文档列表 + 恢复 + 彻底删除 + 30 天自动清理</span>
+  </div>
+  <div class="app">
+    <div class="topnav">
+      <div class="logo"><div class="mark">K</div>知识中枢</div>
+      <div class="nav-tabs">
+        <span class="nav-tab">工作台</span>
+        <span class="nav-tab active">知识库</span>
+        <span class="nav-tab">智能助手</span>
+      </div>
+      <div class="topnav-right">
+        <div class="search-box">🔍 搜索文档、知识库、成员…<span class="kbd">⌘K</span></div>
+        <div class="icon-btn">?</div>
+        <div class="avatar">李</div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sb-section">
+        <div class="sb-title">我的空间</div>
+        <div class="sb-item"><span class="ico">📁</span>团队知识库<span class="count">128</span></div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间导航</div>
+        <div class="sb-item"><span class="ico">📄</span>全部文档</div>
+        <div class="sb-item"><span class="ico">🎨</span>产品设计</div>
+        <div class="sb-item"><span class="ico">⚙️</span>技术研发</div>
+        <div class="sb-item"><span class="ico">📊</span>运营手册</div>
+        <div class="sb-item"><span class="ico">👥</span>客户资料</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">快捷入口</div>
+        <div class="sb-item"><span class="ico">🕒</span>最近更新</div>
+        <div class="sb-item"><span class="ico">⭐</span>我的收藏</div>
+        <div class="sb-item"><span class="ico">🔗</span>与我共享</div>
+      </div>
+      <div class="sb-section">
+        <div class="sb-title">空间设置</div>
+        <div class="sb-item"><span class="ico">🔐</span>成员与权限</div>
+        <div class="sb-item active"><span class="ico">🗑️</span>回收站<span class="count">7</span></div>
+      </div>
+      <div class="usage-card">
+        <div class="label">本周知识库用量</div>
+        <div class="num">3.2 GB / 5 GB</div>
+        <div class="usage-bar"><div class="fill"></div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-title-row">
+        <div>
+          <h2>🗑️ 回收站</h2>
+          <div class="sub">已删除的文档 · 可在 30 天内恢复</div>
+        </div>
+        <div class="right">
+          <span class="filter-chip">📁 全部位置</span>
+          <span class="filter-chip">👤 全部删除者</span>
+          <button class="btn btn-danger-outline">🗑️ 清空回收站</button>
+        </div>
+      </div>
+
+      <div class="recycle-banner">
+        <span class="ricon">⚠️</span>
+        <span class="rtext">回收站中的文档将在 <strong>30 天后自动彻底删除</strong>。彻底删除后无法恢复，请及时处理重要文档。</span>
+        <button class="btn btn-ghost" style="font-size:12px;white-space:nowrap">了解详情</button>
+      </div>
+
+      <div style="background:#fff;border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);overflow:hidden;margin-bottom:16px">
+        <div style="display:flex;align-items:center;padding:12px 20px;border-bottom:1px solid var(--border-light);background:var(--bg-soft)">
+          <div class="checkbox checked" style="margin-right:12px"></div>
+          <span style="font-size:12px;color:var(--text-secondary)">已选 2 项</span>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-ghost" style="font-size:12px">↩️ 批量恢复</button>
+            <button class="btn btn-ghost" style="font-size:12px;color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item">
+          <div class="ricon">📄</div>
+          <div class="rinfo">
+            <div class="rname">旧版用户研究方法对比（废弃稿）</div>
+            <div class="rmeta">
+              <span>📁 原位置：产品设计 / 用户研究</span>
+              <span class="dot"></span>
+              <span>🗑️ 张明 删除</span>
+              <span class="dot"></span>
+              <span>🕒 2 天前</span>
+              <span class="dot"></span>
+              <span class="countdown">⏰ 28 天后自动删除</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline">↩️ 恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item">
+          <div class="ricon">📊</div>
+          <div class="rinfo">
+            <div class="rname">Q1 运营数据周报（已归档）</div>
+            <div class="rmeta">
+              <span>📁 原位置：运营手册 / 周报</span>
+              <span class="dot"></span>
+              <span>🗑️ 赵雪 删除</span>
+              <span class="dot"></span>
+              <span>🕒 5 天前</span>
+              <span class="dot"></span>
+              <span class="countdown">⏰ 25 天后自动删除</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline">↩️ 恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item" style="background:#FFF9F9">
+          <div class="checkbox checked" style="margin-right:14px;flex-shrink:0"></div>
+          <div class="ricon">📎</div>
+          <div class="rinfo">
+            <div class="rname">客户反馈录音 - 20250615.mp3</div>
+            <div class="rmeta">
+              <span>📁 原位置：客户资料</span>
+              <span class="dot"></span>
+              <span>🗑️ 孙磊 删除</span>
+              <span class="dot"></span>
+              <span>🕒 1 周前</span>
+              <span class="dot"></span>
+              <span class="countdown">⏰ 23 天后自动删除</span>
+              <span class="dot"></span>
+              <span>12.4 MB</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline">↩️ 恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item">
+          <div class="ricon">⚙️</div>
+          <div class="rinfo">
+            <div class="rname">技术栈选型讨论稿（初版）</div>
+            <div class="rmeta">
+              <span>📁 原位置：技术研发 / 架构设计</span>
+              <span class="dot"></span>
+              <span>🗑️ 刘洋 删除</span>
+              <span class="dot"></span>
+              <span>🕒 2 周前</span>
+              <span class="dot"></span>
+              <span class="countdown" style="color:var(--warning)">⏰ 16 天后自动删除</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline">↩️ 恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item">
+          <div class="ricon">📋</div>
+          <div class="rinfo">
+            <div class="rname">PRD 模板 v1（已被 v3 替代）</div>
+            <div class="rmeta">
+              <span>📁 原位置：产品设计 / 模板库</span>
+              <span class="dot"></span>
+              <span>🗑️ 张明 删除</span>
+              <span class="dot"></span>
+              <span>🕒 3 周前</span>
+              <span class="dot"></span>
+              <span class="countdown" style="color:var(--danger)">⏰ 9 天后自动删除</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline">↩️ 恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+
+        <div class="recycle-item" style="opacity:.6">
+          <div class="ricon">📄</div>
+          <div class="rinfo">
+            <div class="rname">2024 年度总结草稿</div>
+            <div class="rmeta">
+              <span>📁 原位置：运营手册</span>
+              <span class="dot"></span>
+              <span>🗑️ 王芳 删除</span>
+              <span class="dot"></span>
+              <span>🕒 4 周前</span>
+              <span class="dot"></span>
+              <span class="countdown" style="color:var(--danger)">⏰ 2 天后自动删除</span>
+            </div>
+          </div>
+          <div class="ractions">
+            <button class="btn btn-outline" style="border-color:var(--warning);color:var(--warning)">↩️ 立即恢复</button>
+            <button class="btn btn-ghost" style="color:var(--danger)">彻底删除</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0">
+        <span style="font-size:12px;color:var(--text-tertiary)">共 7 条 · 占用空间 18.6 MB</span>
+        <span style="font-size:12px;color:var(--text-tertiary)">1 / 1 页</span>
+      </div>
+    </main>
+  </div>
+</section>
+
+</body>
+</html>
