@@ -200,7 +200,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import AgentManagementView from './features/agent/components/AgentManagementView.vue';
 import AuthScreen from './features/auth/components/AuthScreen.vue';
 import ChatWorkspaceView from './features/chat/components/ChatWorkspaceView.vue';
-import KnowledgeWorkspaceView from './features/knowledge/components/KnowledgeBaseDashboard.vue';
+import KnowledgeWorkspaceView from './features/knowledge/components/KnowledgeMockupSurface.vue';
 import { useChatSession } from './features/chat/composables/useChatSession';
 import { useKnowledgeBase } from './features/knowledge/composables/useKnowledgeBase';
 import CreateAgentModal from './features/agent/components/CreateAgentModal.vue';

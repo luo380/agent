@@ -1308,4 +1308,4 @@ button, input, textarea, select { font: inherit; }
     flex-direction: column;
     align-items: stretch;
   }
-}
+}.knowledge-suite{position:fixed;inset:0;z-index:100;overflow:auto}
