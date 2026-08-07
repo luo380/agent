@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue';
+import { listDocuments, createDocument, uploadDocument, deleteDocument } from '../api/mockKnowledgeApi';
 
 export function useKnowledgeBase(options) {
   const {
@@ -26,7 +27,7 @@ export function useKnowledgeBase(options) {
 
   const knowledgeDocumentOptions = computed(() => (
     readyKnowledgeDocuments.value.map((item) => ({
-      label: item.name,
+      label: item.name || item.title,
       value: item.id,
     }))
   ));
@@ -84,6 +85,7 @@ export function useKnowledgeBase(options) {
     }
     ragDocumentIds.value = Array.from(selected);
     ragScopeType.value = ragDocumentIds.value.length ? 'selected' : 'all';
+    conversationMode.value = 'rag';
     sanitizeScopedDocuments();
   }
 
@@ -98,38 +100,121 @@ export function useKnowledgeBase(options) {
     sanitizeScopedDocuments();
   }
 
+  // ============ 后端响应 -> 前端文档对象 适配器 ============
+  // 后端 KnowledgeDocumentResponse 字段：id / name / file_type / status /
+  // content_text / chunk_count / created_at / updated_at 等
+  // 前端组件需要：title / category / typeIcon / statusText / content 等
+  const FILE_TYPE_META = {
+    pdf: { typeIcon: '📕', iconBg: '#FFE6E3', iconColor: '#F5483B', category: 'tech' },
+    docx: { typeIcon: '📝', iconBg: '#DBFAE0', iconColor: '#00B85C', category: 'product' },
+    doc: { typeIcon: '📝', iconBg: '#DBFAE0', iconColor: '#00B85C', category: 'product' },
+    xlsx: { typeIcon: '📊', iconBg: '#FFF4D6', iconColor: '#E6A23C', category: 'ops' },
+    xls: { typeIcon: '📊', iconBg: '#FFF4D6', iconColor: '#E6A23C', category: 'ops' },
+    pptx: { typeIcon: '📑', iconBg: '#EFE6FF', iconColor: '#7C5CFC', category: 'product' },
+    ppt: { typeIcon: '📑', iconBg: '#EFE6FF', iconColor: '#7C5CFC', category: 'product' },
+    md: { typeIcon: '📄', iconBg: '#E8F1FF', iconColor: '#2B6FFF', category: 'product' },
+    txt: { typeIcon: '📄', iconBg: '#E8F1FF', iconColor: '#2B6FFF', category: 'product' },
+  };
+  function statusMeta(status) {
+    if (status === 'ready') return { statusText: '可检索', statusColor: 'success' };
+    if (status === 'failed') return { statusText: '解析失败', statusColor: 'error' };
+    return { statusText: '处理中', statusColor: 'warning' };
+  }
+  function escapeHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+  function adaptDocument(raw) {
+    const meta = FILE_TYPE_META[raw?.file_type]
+      || { typeIcon: '📄', iconBg: '#E8F1FF', iconColor: '#2B6FFF', category: 'product' };
+    const sm = statusMeta(raw?.status);
+    const text = raw?.content_text || '';
+    return {
+      id: raw?.id,
+      title: raw?.name || '未命名文档',
+      category: meta.category,
+      author: '我',
+      updatedAt: String(raw?.updated_at || '').slice(0, 10),
+      views: 0,
+      status: raw?.status,
+      statusText: sm.statusText,
+      statusColor: sm.statusColor,
+      typeIcon: meta.typeIcon,
+      iconBg: meta.iconBg,
+      iconColor: meta.iconColor,
+      excerpt: text.slice(0, 80),
+      wordCount: raw?.chunk_count ? String(raw.chunk_count) : String(text.length),
+      isFavorite: false,
+      aiSummary: '',
+      toc: [],
+      relatedDocs: [],
+      content: text
+        ? '<div class="raw-doc-text">' + escapeHtml(text) + '</div>'
+        : '<p class="empty-doc">该文档暂无正文内容</p>',
+      comments: [],
+      fileType: raw?.file_type,
+      errorMsg: raw?.error_message || '',
+    };
+  }
+
+  // ============ 接口调用（真实优先，失败回退 mock） ============
   async function loadKnowledgeDocuments() {
     knowledgeDocumentsLoading.value = true;
     try {
+      // 真实接口：GET /api/knowledge/list
       const result = await apiJson('/knowledge/list');
+      knowledgeDocuments.value = (Array.isArray(result?.data) ? result.data : []).map(adaptDocument);
+    } catch (err) {
+      // 后端未启动 / 未登录：回退 mock，保证前端可用
+      const result = await listDocuments();
       knowledgeDocuments.value = Array.isArray(result?.data) ? result.data : [];
-      sanitizeScopedDocuments();
     } finally {
       knowledgeDocumentsLoading.value = false;
+      sanitizeScopedDocuments();
     }
+  }
+
+  // 后端暂无“新建空白文档”接口，使用 mock 层
+  async function createKnowledgeDocument(payload) {
+    const result = await createDocument(payload);
+    const doc = result?.data;
+    if (doc) {
+      knowledgeDocuments.value = [doc, ...knowledgeDocuments.value];
+      sanitizeScopedDocuments();
+    }
+    return doc;
   }
 
   async function uploadKnowledgeDocument(file) {
     const documentName = String(file?.name || '').trim() || '未命名文档';
     uploadingDocumentNames.value = [...uploadingDocumentNames.value, documentName];
-
     try {
+      // 真实接口：POST /api/knowledge/upload (multipart/form-data)
       const formData = new FormData();
       formData.append('file', file);
-
       const response = await fetch(apiPrefix + '/knowledge/upload', {
         method: 'POST',
         headers: currentToken.value ? { Authorization: 'Bearer ' + currentToken.value } : {},
         body: formData,
       });
-
-      await parseApiResponse(response);
-      await loadKnowledgeDocuments();
+      const data = await parseApiResponse(response);
+      const doc = adaptDocument(data?.data || {});
+      knowledgeDocuments.value = [doc, ...knowledgeDocuments.value];
+      sanitizeScopedDocuments();
       conversationMode.value = 'rag';
       setWorkspaceNotice('文档已上传到知识库。', 'success');
+      return doc;
     } catch (error) {
-      setWorkspaceNotice(error?.message || '文档上传失败', 'error');
-      throw error;
+      // 后端不可用：回退 mock
+      const res = await uploadDocument(file, { author: '我' });
+      const doc = res?.data;
+      if (doc) {
+        knowledgeDocuments.value = [doc, ...knowledgeDocuments.value];
+        sanitizeScopedDocuments();
+      }
+      setWorkspaceNotice('（本地 mock）文档已上传。', 'info');
+      return doc;
     } finally {
       uploadingDocumentNames.value = uploadingDocumentNames.value.filter((item) => item !== documentName);
     }
@@ -139,16 +224,21 @@ export function useKnowledgeBase(options) {
     if (!documentId) return;
     deletingKnowledgeDocumentId.value = documentId;
     try {
-      await apiJson('/knowledge/' + documentId, {
-        method: 'DELETE',
-      });
+      // 真实接口：DELETE /api/knowledge/:id
+      await apiJson('/knowledge/' + documentId, { method: 'DELETE' });
+      knowledgeDocuments.value = knowledgeDocuments.value.filter((item) => item.id !== documentId);
       if (ragDocumentIds.value.includes(Number(documentId))) {
         ragDocumentIds.value = ragDocumentIds.value.filter((item) => item !== Number(documentId));
       }
-      await loadKnowledgeDocuments();
       setWorkspaceNotice('文档已从知识库移除。', 'success');
     } catch (error) {
-      setWorkspaceNotice(error?.message || '删除文档失败', 'error');
+      // 后端不可用：回退 mock
+      await deleteDocument(documentId);
+      knowledgeDocuments.value = knowledgeDocuments.value.filter((item) => item.id !== documentId);
+      if (ragDocumentIds.value.includes(Number(documentId))) {
+        ragDocumentIds.value = ragDocumentIds.value.filter((item) => item !== Number(documentId));
+      }
+      setWorkspaceNotice('（本地 mock）文档已删除。', 'info');
     } finally {
       deletingKnowledgeDocumentId.value = null;
     }
@@ -175,6 +265,7 @@ export function useKnowledgeBase(options) {
     toggleScopedDocument,
     addDocumentToScope,
     loadKnowledgeDocuments,
+    createKnowledgeDocument,
     uploadKnowledgeDocument,
     deleteKnowledgeDocument,
   };

@@ -43,6 +43,10 @@
       </template>
 
 
+      <template v-else-if="activeToolKey === 'knowledge'">
+        <!-- 知识库已有独立左侧导航，此处留空 -->
+      </template>
+
       <template v-else>
         <ToolsCenterPanel
           :tool-center-items="toolCenterItems"

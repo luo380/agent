@@ -6,7 +6,7 @@
 
   <div v-else-if="currentView === 'workspace'" class="workspace-page">
     <a-layout class="workspace-layout">
-      <a-layout-sider :width="activeToolKey === 'knowledge' ? 92 : 448" theme="light" class="workspace-sider">
+      <a-layout-sider v-if="activeToolKey !== 'knowledge'" :width="448" theme="light" class="workspace-sider">
         <WorkspaceSidebar
           :tool-items="toolItems"
           :active-tool-key="activeToolKey"
@@ -102,6 +102,7 @@
           @close-notice="workspaceNotice = ''"
           @refresh-knowledge="loadKnowledgeDocuments"
           @upload-knowledge-document="handleUploadKnowledgeDocument"
+          @create-document="handleCreateDocument"
           @delete-knowledge-document="deleteKnowledgeDocument"
           @add-doc-to-scope="addDocumentToScope"
           @update:conversation-mode="setConversationModeWithTraceGuard"
@@ -200,7 +201,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import AgentManagementView from './features/agent/components/AgentManagementView.vue';
 import AuthScreen from './features/auth/components/AuthScreen.vue';
 import ChatWorkspaceView from './features/chat/components/ChatWorkspaceView.vue';
-import KnowledgeWorkspaceView from './features/knowledge/components/KnowledgeMockupSurface.vue';
+import KnowledgeWorkspaceView from './features/knowledge/components/KnowledgeWorkspaceView.vue';
 import { useChatSession } from './features/chat/composables/useChatSession';
 import { useKnowledgeBase } from './features/knowledge/composables/useKnowledgeBase';
 import CreateAgentModal from './features/agent/components/CreateAgentModal.vue';
@@ -407,6 +408,7 @@ const {
   loadKnowledgeDocuments,
   uploadKnowledgeDocument,
   deleteKnowledgeDocument,
+  createKnowledgeDocument,
 } = useKnowledgeBase({
   apiPrefix: API_PREFIX,
   currentToken,
@@ -502,6 +504,14 @@ async function handleUploadKnowledgeDocument(file) {
     return false;
   }
   return false;
+}
+
+async function handleCreateDocument(payload) {
+  try {
+    await createKnowledgeDocument(payload);
+  } catch (error) {
+    setWorkspaceNotice(error?.message || '创建文档失败', 'warning');
+  }
 }
 
 async function handleDeleteSession(sessionId) {
