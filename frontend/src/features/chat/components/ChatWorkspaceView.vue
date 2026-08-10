@@ -162,3 +162,37 @@ defineExpose({
   focusComposer,
 });
 </script>
+
+<style scoped>
+/* ===== Ant Design Vue v4 规范令牌 ===== */
+.chat-workspace-view {
+  --primary:#1890ff;
+  --primary-hover:#40a9ff;
+  --primary-bg:#e6f7ff;
+  --success:#52c41a;
+  --success-bg:#f6ffed;
+  --warning:#faad14;
+  --warning-bg:#fffbe6;
+  --danger:#ff4d4f;
+  --danger-bg:#fff1f0;
+  --purple:#722ed1;
+  --purple-bg:#f9f0ff;
+  --text:rgba(0,0,0,.88);
+  --text-secondary:rgba(0,0,0,.65);
+  --text-tertiary:rgba(0,0,0,.45);
+  --border:#d9d9d9;
+  --border-light:#f0f0f0;
+  --bg:#f0f2f5;
+  --bg-soft:#fafafa;
+  --card:#fff;
+  --radius-sm:6px;
+  --radius:8px;
+  --radius-lg:12px;
+  --radius-xl:16px;
+}
+.workspace-title.ant-typography { color:var(--text); }
+.workspace-subtitle.ant-typography { color:var(--text-secondary); }
+.agent-select { width:220px; }
+.header-controls { display:flex;align-items:center;gap:12px;flex-wrap:wrap; }
+.trace-toggle-button { border-radius:var(--radius-sm); }
+</style>

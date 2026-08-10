@@ -497,10 +497,12 @@ async function handleToggleRunTrace(sessionId) {
   });
 }
 
-async function handleUploadKnowledgeDocument(file) {
+async function handleUploadKnowledgeDocument(file, onComplete) {
   try {
-    await uploadKnowledgeDocument(file);
+    const doc = await uploadKnowledgeDocument(file);
+    onComplete?.(doc);
   } catch {
+    onComplete?.(null);
     return false;
   }
   return false;
@@ -559,5 +561,4 @@ onMounted(() => {
   restoreSession();
 });
 </script>
-
 

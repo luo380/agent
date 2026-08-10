@@ -192,22 +192,12 @@
 
             <div class="composer-toolbar">
               <div class="composer-tags composer-mode-tags">
-                <button
-                  type="button"
-                  class="composer-tag mode-chip"
-                  :class="{ 'is-active': conversationMode === 'chat' }"
-                  @click="handleConversationModeChange('chat')"
-                >
-                  普通聊天
-                </button>
-                <button
-                  type="button"
-                  class="composer-tag mode-chip"
-                  :class="{ 'is-active': conversationMode === 'rag' }"
-                  @click="handleConversationModeChange('rag')"
-                >
-                  知识库
-                </button>
+                <a-segmented
+                  class="composer-mode-segmented"
+                  :value="conversationMode"
+                  :options="modeOptions"
+                  @change="handleConversationModeChange"
+                />
               </div>
 
               <a-button
@@ -346,6 +336,11 @@ const emit = defineEmits([
 const composerRef = ref(null);
 const ragConfigCollapsed = ref(false);
 
+const modeOptions = [
+  { label: '普通聊天', value: 'chat' },
+  { label: '知识库', value: 'rag' },
+];
+
 const composerModel = computed({
   get: () => props.draftMessage,
   set: (value) => emit('update:draftMessage', value),
@@ -359,19 +354,8 @@ function handleComposerKeydown(event) {
 }
 
 function handleConversationModeChange(nextMode) {
-  if (nextMode === 'chat') {
-    ragConfigCollapsed.value = true;
-    emit('update:conversation-mode', 'chat');
-    return;
-  }
-
-  if (props.conversationMode === 'rag') {
-    ragConfigCollapsed.value = !ragConfigCollapsed.value;
-    return;
-  }
-
-  ragConfigCollapsed.value = false;
-  emit('update:conversation-mode', 'rag');
+  ragConfigCollapsed.value = nextMode !== 'rag';
+  emit('update:conversation-mode', nextMode);
 }
 
 watch(() => props.conversationMode, (mode) => {
@@ -453,3 +437,193 @@ defineExpose({
   focusComposer,
 });
 </script>
+
+<style scoped>
+/* ===== Ant Design Vue v4 规范令牌（向子组件透传） ===== */
+.conversation-stage {
+  --primary:#1890ff;
+  --primary-hover:#40a9ff;
+  --primary-bg:#e6f7ff;
+  --success:#52c41a;
+  --success-bg:#f6ffed;
+  --warning:#faad14;
+  --warning-bg:#fffbe6;
+  --danger:#ff4d4f;
+  --danger-bg:#fff1f0;
+  --purple:#722ed1;
+  --purple-bg:#f9f0ff;
+  --text:rgba(0,0,0,.88);
+  --text-secondary:rgba(0,0,0,.65);
+  --text-tertiary:rgba(0,0,0,.45);
+  --border:#d9d9d9;
+  --border-light:#f0f0f0;
+  --bg:#f0f2f5;
+  --bg-soft:#fafafa;
+  --card:#fff;
+  --radius-sm:6px;
+  --radius:8px;
+  --radius-lg:12px;
+  --radius-xl:16px;
+}
+
+/* 欢迎 / 空状态大图标 */
+.welcome-mark {
+  display:flex;align-items:center;justify-content:center;
+  background:var(--primary);
+  color:#fff;
+  border-radius:var(--radius-lg);
+  font-weight:600;
+  box-shadow:0 6px 16px rgba(24,144,255,.25);
+}
+.welcome-title.ant-typography { color:var(--text); }
+
+/* 快捷提示词 → antd 标签按钮 */
+.quick-prompt-list { justify-content:center; }
+.quick-prompt {
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  background:#fff;
+  color:var(--text-secondary);
+  font-size:13px;
+  font-weight:500;
+  box-shadow:none;
+}
+.quick-prompt:hover {
+  background:var(--primary-bg);
+  color:var(--primary);
+  border-color:var(--primary);
+  transform:none;
+}
+
+/* 消息流 */
+.message-list { padding:6px 0 24px; }
+.message-meta { gap:10px; }
+.message-role { color:var(--text);font-weight:600;font-size:13px; }
+.message-time { color:var(--text-tertiary); }
+.message-avatar.ant-avatar { background:var(--primary); }
+
+.message-bubble {
+  max-width:min(780px,100%);
+  padding:14px 18px;
+  border-radius:var(--radius-lg);
+  background:#fff;
+  border:1px solid var(--border-light);
+  box-shadow:none;
+  color:var(--text);
+  font-size:14px;
+  line-height:1.75;
+  white-space:pre-wrap;
+}
+.message-row.is-user .message-bubble {
+  background:var(--primary);
+  border-color:var(--primary);
+  color:#fff;
+}
+.message-row.is-rag .message-bubble {
+  background:var(--primary-bg);
+  border-color:#91d5ff;
+  color:var(--text);
+}
+
+/* 模式 / 标签 pill */
+.message-mode-pill,
+.rag-meta-pill,
+.scope-chip {
+  display:inline-flex;align-items:center;
+  border-radius:var(--radius-sm);
+  padding:2px 8px;
+  background:var(--primary-bg);
+  color:var(--primary);
+  font-size:12px;font-weight:600;
+  border:1px solid #91d5ff;
+}
+.message-mode-pill.is-chat {
+  background:var(--bg-soft);color:var(--text-secondary);border-color:var(--border-light);
+}
+
+/* RAG 引用卡片 */
+.rag-response-meta { gap:12px; }
+.rag-section-card,
+.rag-citation-card,
+.retrieved-chunk-card {
+  background:#fff;
+  border:1px solid var(--border-light);
+  border-radius:var(--radius);
+  padding:14px 16px;
+}
+.rag-section-head { display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px; }
+.rag-section-heading { display:grid;gap:2px; }
+.rag-section-title { font-weight:600;font-size:14px;color:var(--text); }
+.rag-section-description { color:var(--text-tertiary);font-size:12px; }
+.rag-citation-title-row { display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px; }
+.rag-citation-main strong { color:var(--text);font-size:14px; }
+.rag-citation-summary { color:var(--text-tertiary);font-size:12px;margin-top:2px; }
+.rag-score {
+  display:inline-flex;align-items:center;
+  padding:2px 8px;border-radius:var(--radius-sm);
+  background:var(--primary-bg);color:var(--primary);
+  font-size:11px;font-weight:600;white-space:nowrap;
+}
+.rag-citation-tags { display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px; }
+.rag-citation-meta { color:var(--text-tertiary);font-size:12px;margin-bottom:6px; }
+.rag-citation-copy { color:var(--text-secondary);font-size:13px;line-height:1.7;background:var(--bg-soft);border-radius:var(--radius-sm);padding:10px 12px; }
+.retrieved-chunk-head { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px; }
+.retrieved-chunk-head strong { color:var(--text); }
+.retrieved-chunk-meta { color:var(--text-tertiary);font-size:12px;margin-bottom:6px; }
+.retrieved-chunk-copy { color:var(--text-secondary);font-size:13px;line-height:1.7; }
+.rag-debug-collapse { background:#fff;border:1px solid var(--border-light);border-radius:var(--radius);margin-top:10px; }
+
+/* 输入区卡片 */
+.composer-footer { padding-top:14px; }
+.composer-card {
+  width:100%;margin:0;
+  background:#fff;
+  border:1px solid var(--border-light);
+  border-radius:var(--radius-lg);
+  box-shadow:0 1px 4px rgba(0,0,0,.04);
+}
+.composer-card .ant-card-body { padding:14px 18px;background:transparent; }
+.composer-card .ant-input {
+  border:0;box-shadow:none;resize:none;
+  background:transparent;color:var(--text);
+  font-size:15px;line-height:1.75;
+}
+.composer-card textarea.ant-input { min-height:88px !important;max-height:88px !important;overflow-y:auto; }
+
+/* 模式切换段控 → antd segmented */
+.composer-mode-tags { align-items:center; }
+.composer-mode-segmented { background:var(--bg-soft); }
+
+/* 发送工具栏 */
+.composer-toolbar {
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  margin-top:12px;padding-top:12px;
+  border-top:1px solid var(--border-light);
+}
+
+/* RAG 控制面板 */
+.rag-controls-panel { gap:12px;margin-bottom:12px; }
+.rag-control-grid { gap:12px; }
+.rag-control-card {
+  background:#fff;border:1px solid var(--border-light);
+  border-radius:var(--radius-lg);padding:14px 16px;
+  display:grid;gap:10px;align-content:start;
+}
+.rag-control-title { font-weight:600;font-size:13px;color:var(--text); }
+.rag-control-status { color:var(--text-secondary);font-size:12px; }
+.rag-control-copy { color:var(--text-tertiary);font-size:12px;line-height:1.6; }
+.rag-doc-select, .rag-topk-input { width:100%; }
+
+/* 执行轨迹面板 */
+.run-trace-panel {
+  padding:18px;border-radius:var(--radius-lg);
+  background:#fff;border:1px solid var(--border-light);
+  box-shadow:0 1px 4px rgba(0,0,0,.04);
+}
+
+/* 空状态卡片统一为白底 */
+.empty-card.ant-card {
+  background:#fff;
+  border-radius:var(--radius-lg);
+}
+</style>

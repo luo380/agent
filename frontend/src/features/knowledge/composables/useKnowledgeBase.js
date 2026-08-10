@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue';
-import { listDocuments, createDocument, uploadDocument, deleteDocument } from '../api/mockKnowledgeApi';
+import { createDocument, deleteDocument } from '../api/mockKnowledgeApi';
 
 export function useKnowledgeBase(options) {
   const {
@@ -166,9 +166,8 @@ export function useKnowledgeBase(options) {
       const result = await apiJson('/knowledge/list');
       knowledgeDocuments.value = (Array.isArray(result?.data) ? result.data : []).map(adaptDocument);
     } catch (err) {
-      // 后端未启动 / 未登录：回退 mock，保证前端可用
-      const result = await listDocuments();
-      knowledgeDocuments.value = Array.isArray(result?.data) ? result.data : [];
+      knowledgeDocuments.value = [];
+      setWorkspaceNotice(err?.message || '加载知识库失败', 'warning');
     } finally {
       knowledgeDocumentsLoading.value = false;
       sanitizeScopedDocuments();
@@ -203,18 +202,15 @@ export function useKnowledgeBase(options) {
       knowledgeDocuments.value = [doc, ...knowledgeDocuments.value];
       sanitizeScopedDocuments();
       conversationMode.value = 'rag';
-      setWorkspaceNotice('文档已上传到知识库。', 'success');
+      if (doc.status === 'failed') {
+        setWorkspaceNotice('文档已写入数据库，但解析失败：' + (doc.errorMsg || '未知错误'), 'error');
+      } else {
+        setWorkspaceNotice('文档已上传到知识库。', 'success');
+      }
       return doc;
     } catch (error) {
-      // 后端不可用：回退 mock
-      const res = await uploadDocument(file, { author: '我' });
-      const doc = res?.data;
-      if (doc) {
-        knowledgeDocuments.value = [doc, ...knowledgeDocuments.value];
-        sanitizeScopedDocuments();
-      }
-      setWorkspaceNotice('（本地 mock）文档已上传。', 'info');
-      return doc;
+      setWorkspaceNotice(error?.message || '上传文档失败', 'error');
+      throw error;
     } finally {
       uploadingDocumentNames.value = uploadingDocumentNames.value.filter((item) => item !== documentName);
     }
