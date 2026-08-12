@@ -162,6 +162,26 @@ class Settings:
         os.getenv("SEMANTIC_CHUNKING_BATCH_SIZE", "32")
     )
 
+    # ===== LM Studio 远程 API 模式（可选，推荐开启，与 ProjectEmbeddings 架构统一）=====
+    # 开启后：语义分块不再用 sentence-transformers 在 Python 本地加载模型，
+    #         而是走 LM Studio 启动的 OpenAI 兼容 /v1/embeddings 接口。
+    #         连接参数与现有 LLM / 入库 Embedding 完全一致（OPENAI_BASE_URL / OPENAI_API_KEY），
+    #         这样三套模型服务（LLM / 入库向量 / 分块向量）都由 LM Studio 统一管理。
+    # 用法：
+    #   1. 在 LM Studio 里搜索并启动 MiniLM（GGUF 格式推荐：
+    #      text-embedding-paraphrase-multilingual-minilm-l12-v2.gguf）
+    #   2. SEMANTIC_CHUNKING_API_MODEL 填写 LM Studio 实际加载后的模型名
+    #      （一般是文件名去掉 .gguf 后缀，但建议先跑探测脚本确认）
+    SEMANTIC_CHUNKING_USE_API: bool = os.getenv(
+        "SEMANTIC_CHUNKING_USE_API", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    # LM Studio API 模式下，分块专用 embedding 模型名称（必须和 LM Studio 里实际加载的模型名一致）
+    SEMANTIC_CHUNKING_API_MODEL: str = os.getenv(
+        "SEMANTIC_CHUNKING_API_MODEL",
+        "paraphrase-multilingual-MiniLM-L12-v2",
+    )
+
     # ========== FAISS ANN 近似最近邻索引配置 ==========
     """
     索引类型选型指南（决策树）：

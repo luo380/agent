@@ -271,18 +271,26 @@ def _heuristic_text_chunks(text: str, chunk_size: int, overlap: int) -> list[str
 def _load_semantic_chunking_model():
     """加载本地句子 Embedding 模型（懒加载 + 失败软降级）。
 
-    真正的 Semantic Chunking 第一步：下载 MiniLM 轻量本地模型做分块专用 embedding。
+    模式 A — 本地 sentence-transformers（默认，不用额外启动服务）：
+      - 从 HuggingFace 下载 MiniLM 到本地缓存
+      - 模型选型：
+          paraphrase-multilingual-MiniLM-L12-v2  → 中英通用，~470MB，首推
+          all-MiniLM-L6-v2                        → 纯英文，~100MB，速度最快
 
-    降级策略（fail-soft）：
-      - sentence-transformers 未安装 → 返回 None → 启发式分块兜底
-      - 模型文件未缓存 → sentence-transformers 自动从 HuggingFace 下载
-      - 下载/加载失败 → 返回 None → 启发式分块兜底，不影响整条流水线
+    模式 B — LM Studio API（推荐，与 LLM/入库 Embedding 架构统一）：
+      - 当 settings.SEMANTIC_CHUNKING_USE_API = 1 时启用
+      - 调用 LM Studio 启动的 OpenAI 兼容 /v1/embeddings 接口
+      - 模型名必须与 LM Studio 实际加载的模型名一致（SEMANTIC_CHUNKING_API_MODEL）
 
-    模型选型（都可离线缓存到 ~/.cache/huggingface/）：
-      paraphrase-multilingual-MiniLM-L12-v2  → 中英通用，12层，384维，~470MB，首推
-      all-MiniLM-L6-v2                        → 纯英文，6层，384维，~100MB，速度最快
+    降级策略（fail-soft）：任何异常 → 返回 None → 启发式分块兜底
     """
 
+    # ====== 模式 B：LM Studio API（优先检查，如果用户开启就直接返回占位非 None 表示可用）======
+    use_api = getattr(settings, "SEMANTIC_CHUNKING_USE_API", False)
+    if use_api:
+        return "__USE_LM_STUDIO_API__"
+
+    # ====== 模式 A：本地 sentence-transformers ======
     try:
         from sentence_transformers import SentenceTransformer
     except Exception:
@@ -297,6 +305,70 @@ def _load_semantic_chunking_model():
 
     try:
         return SentenceTransformer(model_name)
+    except Exception:
+        return None
+
+
+def _encode_sentences_via_api(sentences: list[str]) -> list[list[float]] | None:
+    """LM Studio API 模式：走 OpenAI 兼容 /v1/embeddings 为句子生成 embedding。
+
+    【重要】与项目现有 embedding.py / llm.py 完全共用一套连接参数：
+      base_url = settings.OPENAI_BASE_URL（默认 http://localhost:1234/v1）
+      api_key  = settings.OPENAI_API_KEY（默认 lm-studio）
+
+    失败时返回 None，调用方会降级到启发式分块。
+    """
+
+    try:
+        import httpx
+    except Exception:
+        return None
+
+    # 100% 对齐 llm.py get_llm_client() 的连接参数，不另起炉灶
+    base_url = (
+        getattr(settings, "OPENAI_BASE_URL", None)
+        or os.getenv("OPENAI_BASE_URL", "")
+    ).rstrip("/")
+    if not base_url:
+        return None
+
+    api_key = (
+        getattr(settings, "OPENAI_API_KEY", None)
+        or os.getenv("OPENAI_API_KEY", "lm-studio")
+    ) or "lm-studio"
+    model = (
+        getattr(settings, "SEMANTIC_CHUNKING_API_MODEL", None)
+        or os.getenv(
+            "SEMANTIC_CHUNKING_API_MODEL",
+            "paraphrase-multilingual-MiniLM-L12-v2",
+        )
+    ).strip()
+    if not model:
+        return None
+
+    timeout_sec = float(os.getenv("SEMANTIC_CHUNKING_API_TIMEOUT", "60"))
+    # base_url 已经含 /v1（比如 http://localhost:1234/v1），所以直接拼 /embeddings
+    url = base_url + "/embeddings"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = httpx.post(
+            url,
+            headers=headers,
+            json={"model": model, "input": sentences},
+            timeout=timeout_sec,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        items = data.get("data") or []
+        if len(items) != len(sentences):
+            return None
+        sorted_items = sorted(items, key=lambda item: int(item.get("index", 0)))
+        return [list(item.get("embedding", [])) for item in sorted_items]
     except Exception:
         return None
 
@@ -379,10 +451,11 @@ def _merge_semantic_sentences(
 ) -> list[str]:
     """Merge sentence runs into chunks using semantic breakpoints.
 
-    A breakpoint index means: "cut after sentence[index]".
-    Size limits still win, because chunks that are too long hurt embedding
-    quality and retrieval latency. If a semantic chunk grows past chunk_size,
-    the existing sentence/character fallback keeps it bounded.
+    切分决策（两种情况满足任一就切）：
+      ① 尺寸上限触发（已凑够 MIN_TEXT_CHUNK_CHARS 且命中语义断点 / 超 chunk_size）
+      ② "强语义断点"触发：当前块已经至少有 2 句话，即使整体长度 < MIN 也必须切
+         （例：S0-S2 讲语音控制（87字），S3 开始讲维护保养 — 87字虽短但已经是完整的
+         话题，如果被硬拖到 S5 凑够 120 字才切，会把"语音控制+维护保养"粘成同一块）
     """
 
     chunks: list[str] = []
@@ -395,9 +468,13 @@ def _merge_semantic_sentences(
         should_cut_by_semantics = index in breakpoints
         should_cut_by_size = len(current_text) >= chunk_size
         large_enough = len(current_text) >= min(MIN_TEXT_CHUNK_CHARS, chunk_size)
+        strong_semantic_break = (
+            should_cut_by_semantics and len(current_sentences) >= 2
+        )
 
-        if current_sentences and large_enough and (
-            should_cut_by_semantics or should_cut_by_size
+        if current_sentences and (
+            (large_enough and (should_cut_by_semantics or should_cut_by_size))
+            or strong_semantic_break
         ):
             chunks.extend(_split_long_unit(current_text, chunk_size))
 
@@ -464,15 +541,22 @@ def _semantic_split_by_embedding(
         batch_size = DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE
     batch_size = max(1, batch_size)
 
-    try:
-        embeddings = model.encode(
-            sentences,
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-    except Exception:
-        return _heuristic_text_chunks(text, chunk_size, overlap)
+    # embedding 生成：本地 sentence-transformers 模式 / LM Studio API 模式二选一
+    use_api_mode = model == "__USE_LM_STUDIO_API__"
+    if use_api_mode:
+        embeddings = _encode_sentences_via_api(sentences)
+        if embeddings is None:
+            return _heuristic_text_chunks(text, chunk_size, overlap)
+    else:
+        try:
+            embeddings = model.encode(
+                sentences,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        except Exception:
+            return _heuristic_text_chunks(text, chunk_size, overlap)
 
     # 防御性检查：embedding 数量必须和句子数严格对齐，否则降级
     if len(embeddings) != len(sentences):
