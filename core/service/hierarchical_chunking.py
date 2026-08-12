@@ -5,6 +5,8 @@ import re
 from functools import lru_cache
 from typing import Any
 
+from core.config import settings
+
 MIN_TEXT_CHUNK_CHARS = 120
 MAX_TABLE_ROWS_PER_CHUNK = 12
 DEFAULT_SEMANTIC_CHUNK_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
@@ -267,19 +269,18 @@ def _heuristic_text_chunks(text: str, chunk_size: int, overlap: int) -> list[str
 
 @lru_cache(maxsize=1)
 def _load_semantic_chunking_model():
-    """Load the local sentence embedding model lazily.
+    """加载本地句子 Embedding 模型（懒加载 + 失败软降级）。
 
-    This function is intentionally fail-soft:
-    - If sentence-transformers is not installed, return None.
-    - If the model cannot be downloaded/loaded, return None.
-    - The caller then falls back to the existing heuristic chunker.
+    真正的 Semantic Chunking 第一步：下载 MiniLM 轻量本地模型做分块专用 embedding。
 
-    Example .env:
-        SEMANTIC_CHUNKING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+    降级策略（fail-soft）：
+      - sentence-transformers 未安装 → 返回 None → 启发式分块兜底
+      - 模型文件未缓存 → sentence-transformers 自动从 HuggingFace 下载
+      - 下载/加载失败 → 返回 None → 启发式分块兜底，不影响整条流水线
 
-    Other lightweight candidates:
-        all-MiniLM-L6-v2
-        paraphrase-multilingual-MiniLM-L12-v2
+    模型选型（都可离线缓存到 ~/.cache/huggingface/）：
+      paraphrase-multilingual-MiniLM-L12-v2  → 中英通用，12层，384维，~470MB，首推
+      all-MiniLM-L6-v2                        → 纯英文，6层，384维，~100MB，速度最快
     """
 
     try:
@@ -287,9 +288,9 @@ def _load_semantic_chunking_model():
     except Exception:
         return None
 
-    model_name = os.getenv(
-        "SEMANTIC_CHUNKING_MODEL",
-        DEFAULT_SEMANTIC_CHUNK_MODEL,
+    model_name = (
+        getattr(settings, "SEMANTIC_CHUNKING_MODEL", None)
+        or os.getenv("SEMANTIC_CHUNKING_MODEL", DEFAULT_SEMANTIC_CHUNK_MODEL)
     ).strip()
     if not model_name:
         return None
@@ -447,13 +448,19 @@ def _semantic_split_by_embedding(
         return _heuristic_text_chunks(text, chunk_size, overlap)
 
     try:
-        batch_size = int(
-            os.getenv(
-                "SEMANTIC_CHUNKING_BATCH_SIZE",
-                str(DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE),
-            )
+        batch_size_setting = getattr(
+            settings, "SEMANTIC_CHUNKING_BATCH_SIZE", None
         )
-    except ValueError:
+        if batch_size_setting is not None:
+            batch_size = int(batch_size_setting)
+        else:
+            batch_size = int(
+                os.getenv(
+                    "SEMANTIC_CHUNKING_BATCH_SIZE",
+                    str(DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE),
+                )
+            )
+    except (ValueError, TypeError):
         batch_size = DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE
     batch_size = max(1, batch_size)
 
@@ -467,6 +474,11 @@ def _semantic_split_by_embedding(
     except Exception:
         return _heuristic_text_chunks(text, chunk_size, overlap)
 
+    # 防御性检查：embedding 数量必须和句子数严格对齐，否则降级
+    if len(embeddings) != len(sentences):
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    # 真正的 Semantic Chunking 核心：相邻句相似度边界检测 sim(s_i, s_{i+1}) < threshold
     adjacent_similarities: list[float] = []
     for index in range(len(sentences) - 1):
         adjacent_similarities.append(
@@ -479,15 +491,23 @@ def _semantic_split_by_embedding(
     if not adjacent_similarities:
         return _heuristic_text_chunks(text, chunk_size, overlap)
 
+    # 百分位自适应阈值：不同文档写作风格不同，用 P% 分位而不是固定阈值
+    # 例：技术手册相似度普遍高，会议纪要跳题频繁相似度波动大
     if breakpoint_percentile is None:
         try:
-            breakpoint_percentile = float(
-                os.getenv(
-                    "SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE",
-                    str(DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE),
-                )
+            percentile_setting = getattr(
+                settings, "SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE", None
             )
-        except ValueError:
+            if percentile_setting is not None:
+                breakpoint_percentile = float(percentile_setting)
+            else:
+                breakpoint_percentile = float(
+                    os.getenv(
+                        "SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE",
+                        str(DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE),
+                    )
+                )
+        except (ValueError, TypeError):
             breakpoint_percentile = DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE
 
     threshold = _percentile(adjacent_similarities, breakpoint_percentile)

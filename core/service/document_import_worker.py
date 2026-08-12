@@ -376,9 +376,7 @@ async def run_document_import_pipeline(*, document_id, user_id, stored_path,
                 parsed, file_type=file_type,
                 chunk_size=settings.RAG_CHUNK_SIZE,
                 overlap=settings.RAG_CHUNK_OVERLAP,
-                use_semantic_chunking=os.getenv(
-                    "USE_SEMANTIC_CHUNKING", "0",
-                ).strip().lower() in {"1", "true", "yes", "on"},
+                use_semantic_chunking=settings.USE_SEMANTIC_CHUNKING,
             )
             if not chunk_items:
                 raise RuntimeError("No chunk items produced")

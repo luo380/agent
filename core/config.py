@@ -118,6 +118,50 @@ class Settings:
     # RAG 文本分块重叠大小，确保相邻分块之间有上下文衔接
     RAG_CHUNK_OVERLAP: int = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))
 
+    # ========== 语义分块（Semantic Chunking）配置 ==========
+    """
+    真正的语义分块：基于 Embedding 的相邻句相似度边界检测
+
+    核心思路：
+      1. 将全文切分成句子 S1, S2, ..., Sn
+      2. 用 MiniLM 本地模型为每个句子生成 embedding
+      3. 计算相邻句相似度：sim(Si, Si+1) = cosine(Ei, Ei+1)
+      4. 取相似度分布的 P-th 百分位作为阈值（适应不同写作风格）
+      5. 相似度低于阈值的位置 = 语义断点 → 在此处切块
+
+    环境变量示例（.env 文件）：
+        USE_SEMANTIC_CHUNKING=1
+        SEMANTIC_CHUNKING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+        SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE=20
+        SEMANTIC_CHUNKING_BATCH_SIZE=32
+    """
+    # 是否启用真正的语义分块（0=启发式段落/句子/字符，1=Embedding相似度边界检测）
+    USE_SEMANTIC_CHUNKING: bool = os.getenv(
+        "USE_SEMANTIC_CHUNKING", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    # 分块专用 Embedding 模型（轻量本地模型，不需要 API）
+    # 推荐选项：
+    #   paraphrase-multilingual-MiniLM-L12-v2  → 多语言，中英通用，~470MB，首推
+    #   all-MiniLM-L6-v2                        → 纯英文，更小更快 ~100MB
+    SEMANTIC_CHUNKING_MODEL: str = os.getenv(
+        "SEMANTIC_CHUNKING_MODEL",
+        "paraphrase-multilingual-MiniLM-L12-v2",
+    )
+
+    # 断点百分位：取相邻句相似度分布的 P% 分位作为切分阈值
+    #   值越小 → 切得越粗（只在最明显的语义跳变处切）
+    #   值越大 → 切得越细（中等相似度差异也切开）
+    #   推荐范围：10 ~ 35，默认 20
+    SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE: float = float(
+        os.getenv("SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE", "20.0")
+    )
+
+    # 句子 Embedding 批大小（受显存/内存限制，32 是通用平衡值）
+    SEMANTIC_CHUNKING_BATCH_SIZE: int = int(
+        os.getenv("SEMANTIC_CHUNKING_BATCH_SIZE", "32")
+    )
+
     # ========== FAISS ANN 近似最近邻索引配置 ==========
     """
     索引类型选型指南（决策树）：
