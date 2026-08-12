@@ -325,6 +325,10 @@ async def upload_file(
             file_type=file_type,
             chunk_size=settings.RAG_CHUNK_SIZE,      # 默认 500 字符
             overlap=settings.RAG_CHUNK_OVERLAP,       # 默认 100 字符
+            use_semantic_chunking=os.getenv(
+                "USE_SEMANTIC_CHUNKING",
+                "0",
+            ).strip().lower() in {"1", "true", "yes", "on"},
         )
 
         if not chunk_items:
@@ -334,24 +338,11 @@ async def upload_file(
         parent_items = [item for item in chunk_items if item["chunk_role"] == KNOWLEDGE_CHUNK_ROLE_PARENT]
         leaf_items = [item for item in chunk_items if item["chunk_role"] == KNOWLEDGE_CHUNK_ROLE_LEAF]
 
-        # ========== 阶段6: 向量化（只对 leaf chunk 做 embedding） ==========
-        embeddings_service = ProjectEmbeddings()
-        leaf_embeddings: list[list[float]] = []
-        if leaf_items:
-            # 对 leaf chunk 的 retrieval_content 做 embedding
-            # retrieval_content 已包含 "[父级主题] xxx" 和 "[内容类型] 正文/表格" 前缀
-            # 例: "[父级主题] 第二章 方法\n[内容类型] 正文\n本研究采用..."
-            leaf_embeddings = await embeddings_service.aembed_documents(
-                [item["retrieval_content"] for item in leaf_items]
-            )
+        # ========== 阶段6: 入库（先保存 parent/leaf，再生成 embedding） ==========
+        # embedding 服务不可用时也要保留已经解析出的 chunk，便于后续重试或关键词检索。
+        leaf_rows: list[KnowledgeChunks] = []
 
-        # 向量数量必须和 leaf chunk 数量一致，否则说明 embedding 服务异常
-        if len(leaf_embeddings) != len(leaf_items):
-            raise RuntimeError("Embedding result count does not match leaf chunk count")
-
-        # ========== 阶段7: 入库（先 parent，后 leaf） ==========
-
-        # 7.1 先插入 parent chunk
+        # 6.1 先插入 parent chunk
         #     使用 db.flush() 而非 commit()，这样 parent.id 立即可用
         #     但万一后续失败，整个事务回滚，不会留下孤儿数据
         local_parent_id_map: dict[str, int] = {}  # local_parent_key → 数据库 id 的映射
@@ -380,8 +371,8 @@ async def upload_file(
             # 建立映射: "parent_0" → 1001, "parent_1" → 1002, ...
             local_parent_id_map[item["local_parent_key"]] = row.id
 
-        # 7.2 再插入 leaf chunk，关联 parent_chunk_id
-        for item, embedding in zip(leaf_items, leaf_embeddings):
+        # 6.2 再插入 leaf chunk，关联 parent_chunk_id
+        for item in leaf_items:
             parent_chunk_id = local_parent_id_map.get(item["local_parent_key"])
 
             row = KnowledgeChunks(
@@ -401,20 +392,46 @@ async def upload_file(
                 end_offset=int(item["end_offset"]),
                 source_page=item["source_page"],
                 source_section=item["source_section"] or "",
-                embedding_json=json.dumps(embedding, ensure_ascii=False),  # 向量存为 JSON 字符串
+                embedding_json="",  # embedding 在 chunk 持久化后单独写入
             )
             db.add(row)
+            leaf_rows.append(row)
 
-        # 更新文档状态: 记录 chunk 总数，标记为 ready
+        # 先提交 chunk，避免 embedding 服务故障导致 chunk 一并回滚。
         document.chunk_count = len(chunk_items)
-        document.status = DOCUMENT_STATUS_READY
-        db.commit()       # 事务提交，所有 parent + leaf 一次性入库
+        document.status = DOCUMENT_STATUS_CHUNKING
+        db.commit()
+        db.refresh(document)
+
+        # ========== 阶段7: 向量化（只对 leaf chunk 做 embedding） ==========
+        embedding_error = None
+        leaf_embeddings: list[list[float]] = []
+        try:
+            embeddings_service = ProjectEmbeddings()
+            if leaf_items:
+                leaf_embeddings = await embeddings_service.aembed_documents(
+                    [item["retrieval_content"] for item in leaf_items]
+                )
+
+            if len(leaf_embeddings) != len(leaf_items):
+                raise RuntimeError("Embedding result count does not match leaf chunk count")
+        except Exception as exc:
+            embedding_error = exc
+            leaf_embeddings = [[] for _ in leaf_items]
+
+        for row, embedding in zip(leaf_rows, leaf_embeddings):
+            row.embedding_json = json.dumps(embedding, ensure_ascii=False) if embedding else ""
+
+        document.error_message = str(embedding_error) if embedding_error else ""
+        document.status = DOCUMENT_STATUS_FAILED if embedding_error else DOCUMENT_STATUS_READY
+        db.commit()
         db.refresh(document)
 
         # ========== 阶段8: 重建 FAISS 索引 ==========
         # 将该用户所有 leaf chunk 的向量写入 FAISS 索引文件
         # 失败不影响上传（sync_user_faiss_index 内部已 try-catch）
-        sync_user_faiss_index(db, user_id=user.id)
+        if not embedding_error:
+            sync_user_faiss_index(db, user_id=user.id)
 
     except Exception as exc:
         # ========== 异常处理: 回滚 + 标记失败 ==========

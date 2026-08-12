@@ -1,7 +1,7 @@
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections import Counter
 from sqlalchemy import Sequence
 from sqlalchemy.orm import Session
@@ -19,6 +19,7 @@ from core.service.rag_grounding import (
     relation_evidence_score,
 )
 from core.service.query_rewrite import build_weighted_rewrite_queries
+from core.service.reranker import cross_encoder_rerank
 
 """
 它是 RAG 的“检索中间层”负责把“用户问题”变成“可用的知识块候选”，不负责生成答案。
@@ -754,8 +755,13 @@ def _build_weighted_bm25_query_terms(query_text: str) -> dict[str, float]:
     """
     term_weights: dict[str, float] = {}
 
+    # 1. 遍历所有"查询形式" + 各自的权重
     for form_text, form_weight in build_weighted_recall_query_forms(query_text):
+
+        # 2. 对每个查询形式分词（dict.fromkeys 去重但保序）
         for token in dict.fromkeys(_tokenize_for_bm25(form_text)):
+
+            # 3. 如果同一个 token 出现在多个 form 里，保留最高权重
             current_weight = term_weights.get(token, 0.0)
             if form_weight > current_weight:
                 term_weights[token] = form_weight
@@ -1765,7 +1771,62 @@ def rerank_chunks(
         reverse=True,  # 降序排列
     )
 
-    return reranked[:top_k]
+    # ═══════════════════════════════════════════════════════
+    # 【阶段3-6】可选模型精排（Cross-Encoder Rerank）
+    # ═══════════════════════════════════════════════════════
+    #
+    # 设计说明：
+    # 1. 上面基于规则的 final_score 排序始终是默认行为，不依赖任何模型，保证系统基础可用性。
+    # 2. 只有当环境变量 RAG_CROSS_ENCODER_RERANK_ENABLED=1 时，才会触发模型精排阶段。
+    # 3. 送入模型的不是全部语料，而是已经经过「召回 + 粗排」筛选后的候选列表（reranked），
+    #    这样可以将 Cross-Encoder 昂贵的计算成本控制在可接受范围（通常只精排前 30~50 个）。
+    # 4. Cross-Encoder（如 BAAI/bge-reranker-base）会将「查询文本 + 文档内容」拼接后
+    #    一起输入模型做相关性判断，相比双编码器（分别编码查询和文档再计算余弦相似度），
+    #    它能捕捉更深层的语义匹配关系——尤其擅长处理「字面不重合但语义相同」的匹配，
+    #    例如用户问 "WiFi连不上怎么办" 能匹配到标题是 "无线网络故障排查指南" 的文档。
+    #
+    # 启用方式（环境变量）：
+    #   RAG_CROSS_ENCODER_RERANK_ENABLED=1
+    #   RAG_CROSS_ENCODER_MODEL=BAAI/bge-reranker-base  # 或本地模型路径
+    #
+    # 安全降级策略（cross_encoder_rerank 内部实现）：
+    #   - 未安装 sentence-transformers 依赖？→ 返回规则排序结果
+    #   - 模型文件下载失败 / 本地路径不存在？→ 返回规则排序结果
+    #   - GPU OOM / 推理超时 / 任何异常？→ 返回规则排序结果
+    #   总之：模型精排是锦上添花，失败时绝对不能影响整个 RAG 管道的可用性。
+    #
+    # 参数注入说明（通过 lambda 传入 getter/setter，实现 reranker 模块与 Chunk 数据结构解耦）：
+    #   text_getter      → 告诉 reranker 如何从 chunk 对象中取出用于模型打分的纯文本内容
+    #   rule_score_getter → 告诉 reranker 之前规则排序的分数存在哪个字段（用于分数融合）
+    #   score_setter      → 告诉 reranker 融合后的新分数应该写回到 chunk 的哪个字段
+    return cross_encoder_rerank(
+        # 用户原始查询文本：作为 Cross-Encoder 输入对的左侧
+        query_text,
+        # 经过粗排后的候选列表（已按规则 final_score 降序排列）
+        reranked,
+        # ---------- text_getter：构造送入模型打分的文档文本 ----------
+        # 策略：优先使用 chunk.content + matched_child_content 的组合，但有去重逻辑
+        #   - 如果存在 matched_child_content（子块精确匹配内容，如表格某几行、列表某几项），
+        #     且该内容没有在主 content 中出现过，则拼接两部分作为打分文本，
+        #     这样 Cross-Encoder 能看到更完整的匹配证据，避免子块重要信息被截断遗漏。
+        #   - 否则直接使用 content 即可，防止相同内容重复拼接浪费模型 token。
+        text_getter=lambda chunk: (
+            f"{chunk.content}\n\n{chunk.matched_child_content}".strip()
+            if chunk.matched_child_content
+            and chunk.matched_child_content not in chunk.content
+            else chunk.content
+        ),
+        # ---------- rule_score_getter：获取粗排阶段的规则分数 ----------
+        # 用于和模型分数做加权融合（默认权重：模型 0.65 + 规则 0.35），
+        # 保留规则系统中关键词命中密度、文档新鲜度、强制提权等人工经验信号
+        rule_score_getter=lambda chunk: chunk.final_score,
+        # ---------- score_setter：将融合后的新分数写回 chunk ----------
+        # 使用 dataclasses.replace() 创建新的不可变实例（因为 RetrievedChunk 通常是 frozen dataclass），
+        # 将融合后的最终得分写入 final_score 字段，作为后续返回结果的排序依据
+        score_setter=lambda chunk, score: replace(chunk, final_score=score),
+        # 返回给上层调用方的结果数量上限（通常是 RAG 需要送入 LLM 的上下文块数量，如 3~10 个）
+        top_k=top_k,
+    )
 
 
 

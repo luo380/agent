@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 import re
+from functools import lru_cache
 from typing import Any
 
 MIN_TEXT_CHUNK_CHARS = 120
 MAX_TABLE_ROWS_PER_CHUNK = 12
+DEFAULT_SEMANTIC_CHUNK_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE = 20.0
+DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE = 32
+SENTENCE_END_CHARS = set(".!?\n\u3002\uff01\uff1f\uff1b")
 
 #表格分割线
 MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
@@ -62,6 +68,12 @@ def _split_sentences(text: str) -> list[str]:
 
     for char in text:
         current.append(char)
+        if char in SENTENCE_END_CHARS:
+            sentence = "".join(current).strip()
+            if sentence:
+                sentences.append(sentence)
+            current = []
+            continue
         if char in "。！？!?；;":
             sentence = "".join(current).strip()
             if sentence:
@@ -176,7 +188,7 @@ def _tail_overlap_text(text: str, overlap: int) -> str:
     return " ".join(reversed(picked)).strip()
 
 
-def _semantic_text_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
+def _heuristic_text_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
 
     """
     正文块切分主逻辑。
@@ -249,6 +261,272 @@ def _semantic_text_chunks(text: str, chunk_size: int, overlap: int) -> list[str]
         chunks.append("\n\n".join(current_units).strip())
 
     return [item for item in chunks if item]
+
+
+
+
+@lru_cache(maxsize=1)
+def _load_semantic_chunking_model():
+    """Load the local sentence embedding model lazily.
+
+    This function is intentionally fail-soft:
+    - If sentence-transformers is not installed, return None.
+    - If the model cannot be downloaded/loaded, return None.
+    - The caller then falls back to the existing heuristic chunker.
+
+    Example .env:
+        SEMANTIC_CHUNKING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+
+    Other lightweight candidates:
+        all-MiniLM-L6-v2
+        paraphrase-multilingual-MiniLM-L12-v2
+    """
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return None
+
+    model_name = os.getenv(
+        "SEMANTIC_CHUNKING_MODEL",
+        DEFAULT_SEMANTIC_CHUNK_MODEL,
+    ).strip()
+    if not model_name:
+        return None
+
+    try:
+        return SentenceTransformer(model_name)
+    except Exception:
+        return None
+
+
+def _semantic_cosine_similarity(a: Any, b: Any) -> float:
+    """Cosine similarity for sentence embeddings.
+
+    sentence-transformers may return numpy arrays, torch tensors, or plain
+    lists depending on runtime settings. Iterating over them keeps this helper
+    dependency-light and easy to test.
+    """
+
+    a_values = [float(value) for value in a]
+    b_values = [float(value) for value in b]
+    if not a_values or not b_values or len(a_values) != len(b_values):
+        return 0.0
+
+    dot = sum(x * y for x, y in zip(a_values, b_values))
+    norm_a = sum(x * x for x in a_values) ** 0.5
+    norm_b = sum(y * y for y in b_values) ** 0.5
+    if not norm_a or not norm_b:
+        return 0.0
+
+    return dot / (norm_a * norm_b)
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    """Return a percentile value with linear interpolation.
+
+    Why percentile instead of a fixed threshold?
+    Different documents have different writing styles. A technical manual may
+    have many short related sentences, while a meeting note may jump topics
+    often. Percentile-based thresholds adapt to each document by cutting at
+    the local low-similarity valleys.
+
+    Example:
+        similarities = [0.91, 0.88, 0.31, 0.86]
+        percentile=25 roughly selects a low value, so the 0.31 valley becomes
+        a semantic breakpoint.
+    """
+
+    if not values:
+        return 0.0
+
+    percentile = max(0.0, min(100.0, float(percentile)))
+    sorted_values = sorted(values)
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+
+    position = (len(sorted_values) - 1) * (percentile / 100.0)
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, len(sorted_values) - 1)
+    weight = position - lower_index
+
+    return (
+        sorted_values[lower_index] * (1.0 - weight)
+        + sorted_values[upper_index] * weight
+    )
+
+
+def _semantic_sentence_units(text: str) -> list[str]:
+    """Split text into sentence units while preserving paragraph order."""
+
+    units: list[str] = []
+    for paragraph in _split_paragraphs(text):
+        units.extend(
+            sentence.strip()
+            for sentence in _split_sentences(paragraph)
+            if sentence.strip()
+        )
+
+    return units
+
+
+def _merge_semantic_sentences(
+    sentences: list[str],
+    breakpoints: set[int],
+    chunk_size: int,
+    overlap: int,
+) -> list[str]:
+    """Merge sentence runs into chunks using semantic breakpoints.
+
+    A breakpoint index means: "cut after sentence[index]".
+    Size limits still win, because chunks that are too long hurt embedding
+    quality and retrieval latency. If a semantic chunk grows past chunk_size,
+    the existing sentence/character fallback keeps it bounded.
+    """
+
+    chunks: list[str] = []
+    current_sentences: list[str] = []
+
+    for index, sentence in enumerate(sentences):
+        current_sentences.append(sentence)
+        current_text = " ".join(current_sentences).strip()
+
+        should_cut_by_semantics = index in breakpoints
+        should_cut_by_size = len(current_text) >= chunk_size
+        large_enough = len(current_text) >= min(MIN_TEXT_CHUNK_CHARS, chunk_size)
+
+        if current_sentences and large_enough and (
+            should_cut_by_semantics or should_cut_by_size
+        ):
+            chunks.extend(_split_long_unit(current_text, chunk_size))
+
+            overlap_text = _tail_overlap_text(current_text, overlap)
+            current_sentences = [overlap_text] if overlap_text else []
+
+    if current_sentences:
+        current_text = " ".join(current_sentences).strip()
+        chunks.extend(_split_long_unit(current_text, chunk_size))
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def _semantic_split_by_embedding(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+    *,
+    breakpoint_percentile: float | None = None,
+) -> list[str]:
+    """Split text by embedding-based semantic boundaries.
+
+    Pipeline:
+        full text
+        -> sentence split
+        -> sentence embeddings
+        -> adjacent sentence cosine similarity
+        -> low-similarity valleys become breakpoints
+        -> merge sentence runs into chunks
+        -> oversized chunks fall back to _split_long_unit()
+
+    Example:
+        S1: "The product supports Xiaoai."
+        S2: "It also supports Tmall Genie."
+        S3: "Clean the main brush every week."
+
+        sim(S1, S2) should be high.
+        sim(S2, S3) should be lower.
+        The algorithm cuts after S2 because the topic changes.
+    """
+
+    sentences = _semantic_sentence_units(text)
+    if len(sentences) <= 1:
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    model = _load_semantic_chunking_model()
+    if model is None:
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    try:
+        batch_size = int(
+            os.getenv(
+                "SEMANTIC_CHUNKING_BATCH_SIZE",
+                str(DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE),
+            )
+        )
+    except ValueError:
+        batch_size = DEFAULT_SEMANTIC_EMBEDDING_BATCH_SIZE
+    batch_size = max(1, batch_size)
+
+    try:
+        embeddings = model.encode(
+            sentences,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+    except Exception:
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    adjacent_similarities: list[float] = []
+    for index in range(len(sentences) - 1):
+        adjacent_similarities.append(
+            _semantic_cosine_similarity(
+                embeddings[index],
+                embeddings[index + 1],
+            )
+        )
+
+    if not adjacent_similarities:
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    if breakpoint_percentile is None:
+        try:
+            breakpoint_percentile = float(
+                os.getenv(
+                    "SEMANTIC_CHUNKING_BREAKPOINT_PERCENTILE",
+                    str(DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE),
+                )
+            )
+        except ValueError:
+            breakpoint_percentile = DEFAULT_SEMANTIC_BREAKPOINT_PERCENTILE
+
+    threshold = _percentile(adjacent_similarities, breakpoint_percentile)
+    breakpoints = {
+        index
+        for index, similarity in enumerate(adjacent_similarities)
+        if similarity <= threshold
+    }
+
+    chunks = _merge_semantic_sentences(
+        sentences,
+        breakpoints,
+        chunk_size,
+        overlap,
+    )
+    return chunks or _heuristic_text_chunks(text, chunk_size, overlap)
+
+
+def _semantic_text_chunks(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+    *,
+    use_semantic_chunking: bool = False,
+) -> list[str]:
+    """Choose between heuristic and embedding-based semantic chunking.
+
+    Default behavior stays unchanged:
+        use_semantic_chunking=False -> paragraph/sentence/character heuristic.
+
+    Experiment mode:
+        use_semantic_chunking=True -> embedding boundary detection first,
+        with automatic fallback to the heuristic chunker.
+    """
+
+    if not use_semantic_chunking:
+        return _heuristic_text_chunks(text, chunk_size, overlap)
+
+    return _semantic_split_by_embedding(text, chunk_size, overlap)
 
 def _looks_like_markdown_table_line(line: str) -> bool:
     line = (line or "").strip()
@@ -540,6 +818,7 @@ def build_hierarchical_chunks(
     file_type: str,
     chunk_size: int = 500,
     overlap: int = 100,
+    use_semantic_chunking: bool = False,
 ) -> list[dict]:
     """
     生成“完整层级 chunk”。
@@ -567,11 +846,11 @@ def build_hierarchical_chunks(
                          │
                          ▼
     ┌─────────────────────────────────────────────────┐
-    │ 对每个父块:                                      │
-    │   - 表格父块 → _chunk_table_text() 按行切        │
-    │   - 正文父块 → _semantic_text_chunks() 语义切    │
-    │   每个叶子块再通过 _build_retrieval_content()     │
-    │   注入父级主题前缀，生成增强检索文本              │
+    │ 对每个父块:                                       │
+    │   - 表格父块 → _chunk_table_text() 按行切          │
+    │   - 正文父块 → _semantic_text_chunks() 语义切      │
+    │   每个叶子块再通过 _build_retrieval_content()      │
+    │   注入父级主题前缀，生成增强检索文本                   │
     └────────────────────┬────────────────────────────┘
                          │
                          ▼
@@ -701,7 +980,12 @@ def build_hierarchical_chunks(
 
         # ===== 分支B：正文类型父块 → 语义切分 =====
         # 先按段落边界切，再按句子边界切，超长句子按字符兜底切
-        leaf_text_chunks = _semantic_text_chunks(parent_text, chunk_size, overlap)
+        leaf_text_chunks = _semantic_text_chunks(
+            parent_text,
+            chunk_size,
+            overlap,
+            use_semantic_chunking=use_semantic_chunking,
+        )
         for child_index, leaf_text in enumerate(leaf_text_chunks, start=1):
             local_start = _safe_find_from(parent_text, leaf_text, local_cursor)
             local_end = local_start + len(leaf_text)
