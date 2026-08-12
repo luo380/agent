@@ -1,10 +1,10 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import auth, health, agents, session, runs, knowledge, rag, rag_langchain_native
+from api.routes import auth, health, agents, session, runs, knowledge, rag_langchain_native
 from core.db.session import init_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -51,7 +51,6 @@ app.include_router(session.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
 
-app.include_router(rag.router, prefix="/api/rag", tags=["rag"])
 
 app.include_router(rag_langchain_native.router, prefix="/api/rag-langchain", tags=["rag-langchain"])
 

@@ -2,28 +2,35 @@ import json
 import os
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, File, Depends, UploadFile, HTTPException
+from fastapi import APIRouter, File, Depends, UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
-from api.schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentDetailResponse, KnowledgeChunkResponse
+from api.schemas.knowledge import (
+    KnowledgeDocumentResponse, KnowledgeDocumentDetailResponse,
+    KnowledgeChunkResponse, KnowledgeDocumentImportTaskResponse,
+)
 from core.config import settings
 from core.service.vector_index import rebuild_user_faiss_index
+from core.service.document_import_worker import (
+    calc_file_md5,
+    find_duplicate_document,
+    run_document_import_pipeline,
+)
 
 from core.db.models import (
     User,
     KnowledgeDocuments,
+    KnowledgeChunkFailures,
     DOCUMENT_STATUS_UPLOADED,
     DOCUMENT_STATUS_PARSING,
     DOCUMENT_STATUS_CHUNKING,
     DOCUMENT_STATUS_READY,
     DOCUMENT_STATUS_FAILED,
-    KnowledgeChunks,
     KNOWLEDGE_CHUNK_ROLE_PARENT,
-    KNOWLEDGE_CHUNK_ROLE_LEAF,
+    KNOWLEDGE_CHUNK_ROLE_LEAF, KnowledgeChunks, DOCUMENT_STATUS_PARSED, DOCUMENT_STATUS_CHUNKED,
+    DOCUMENT_STATUS_EMBEDDING, DOCUMENT_STATUS_INDEXING,
 )
-from core.service.hierarchical_chunking import build_hierarchical_chunks
-from core.service.langchain_adapters import ProjectDocumentLoader, ProjectEmbeddings
 router = APIRouter()
 
 
@@ -83,378 +90,201 @@ def get_file_type(filename: str) -> str:
 
 
 
-@router.post("/upload")
+def _enrich_doc_with_progress(doc: KnowledgeDocuments) -> dict:
+    """
+    ★ 进度条计算函数 ★（把 DB 对象 → 前端可直接渲染的 dict，核心是 import_progress_percent）
+
+    ════════════════════════════════════════════════════════════════
+    进度分配（为啥这么拆？按各阶段实际耗时占比，embedding 占 60% 是合理的）：
+
+      Phase 权重  起点    终点     状态
+      ──────┬─────┬───────┬───────┬─────────────────────────────
+       上传  │  5% │   5%  │   5%  │ uploaded
+       解析  │  5% │   5%  │  10%  │ parsing → parse_failed 停在 10%
+       分块  │ 20% │  10%  │  30%  │ chunking → chunk_failed 停在 25%
+    ★ embedding │ 60% │  30%  │  90%  │ embedding（用 processed/total 线性插值）
+       索引  │  5% │  90%  │  95%  │ indexing
+       完成  │  5% │  95%  │ 100%  │ ready
+
+    注意：embedding 占 60% 权重是因为它是最耗时的一步（要调 N 次 API + 每次都有 RTT），
+         也是唯一能拿到"processed/total"精确计数的阶段，所以进度条在这一段是最丝滑的。
+
+    例（100 个 chunk，embedding 阶段成功了 72 个）：
+        processed_chunks = 72, total_chunks = 100
+        → pct = 30.0 + (72/100) * 60.0 = 30 + 43.2 = 73.2%
+        → 前端进度条显示 73% ✓
+    """
+    data = KnowledgeDocumentImportTaskResponse.model_validate(doc).model_dump()
+    total = max(1, doc.total_chunks or 0)
+
+    # ---- 1. 正常分支 ----
+    if doc.status in {DOCUMENT_STATUS_UPLOADED, DOCUMENT_STATUS_PARSING,
+                      DOCUMENT_STATUS_PARSED, DOCUMENT_STATUS_CHUNKING}:
+        # uploaded → parsing → parsed → chunking 这几步都没精确进度，统一展示 5%
+        # （如果卡住超过 20s 还是 5%，前端可以根据 updated_at 没变化来判断"疑似卡住"）
+        data["import_progress_percent"] = 5.0
+    elif doc.status == DOCUMENT_STATUS_CHUNKED:
+        # chunk 分完了 → 相当于 30% 完成
+        data["import_progress_percent"] = 30.0
+    elif doc.status == DOCUMENT_STATUS_EMBEDDING:
+        # ★ 丝滑进度条的核心：30% + 60% * (已完成 / 总数)，保留 1 位小数
+        pct = 30.0 + min(60.0, (doc.processed_chunks / total) * 60.0) if total else 30.0
+        data["import_progress_percent"] = round(pct, 1)
+    elif doc.status == DOCUMENT_STATUS_INDEXING:
+        # FAISS 写入磁盘一般很快（< 1s），用固定 95% 占位
+        data["import_progress_percent"] = 95.0
+    elif doc.status == DOCUMENT_STATUS_READY:
+        data["import_progress_percent"] = 100.0
+
+    # ---- 2. 失败分支：进度条停在对应阶段的中间点，前端可以红色高亮 ----
+    else:
+        if doc.status == "parse_failed":
+            # 解析阶段大概占 5%，所以失败后停在 10% 附近
+            data["import_progress_percent"] = 10.0
+        elif doc.status == "chunk_failed":
+            # 分块阶段占 20%，中间点大约 25%
+            data["import_progress_percent"] = 25.0
+        elif doc.status == "embed_failed":
+            # embedding 失败 → 用当时的 processed_chunks 展示（和 embedding 阶段同一套插值）
+            # 例：100 个只跑成功 40 个 → 30 + 40%*60 = 54% 处红条停止
+            pct = 30.0 + min(60.0, (doc.processed_chunks / total) * 60.0) if total else 30.0
+            data["import_progress_percent"] = round(pct, 1)
+        else:
+            # 兜底（老版本的 failed 状态）→ 不猜进度，给 None，前端显示"未知"
+            data["import_progress_percent"] = None
+    return data
+
+
+@router.post("/upload", response_model=dict)
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """
-    上传文件 → 解析 → 分块 → 向量化 → 入库 → 重建索引，一个接口走完。
+    异步上传（缺口6改造）：
+      1. 接收文件 → 校验扩展名 → 落盘
+      2. 立刻计算 MD5 → 如果同用户已有相同 MD5 且 status=ready，直接返回旧文档（is_duplicate_hit=true）
+      3. 否则 INSERT knowledge_documents (status=uploaded)
+      4. 把真正耗时的「解析→分块→embedding→重建FAISS」丢进 BackgroundTasks
+         （FastAPI 会等 HTTP 响应发出去再慢慢跑）
+      5. 立刻 HTTP 200 返回 document_id + status=uploaded
+         前端轮询 GET /api/knowledge/{id}/status 直到 status == ready / *_failed / failed
 
-    这是知识库最核心的上传接口，完整链路如下：
-
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段1: 文件校验                                                    │
-    │  - 文件名非空检查                                                  │
-    │  - 扩展名白名单校验（txt, md, pdf, docx, xlsx, xls, pptx）         │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段2: 文件落盘                                                    │
-    │  - 生成唯一文件名: {uuid}.{ext}，如 "a1b2c3d4.pdf"                 │
-    │  - 写入 upload_dir 目录                                           │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段3: 创建数据库记录（status = uploaded）                          │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段4: 文档解析（status → parsing）                                │
-    │  - ProjectDocumentLoader 统一解析不同格式                          │
-    │  - 产出: full_text + pages/sections 结构化数据                     │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段5: 分层分块（status → chunking）                               │
-    │  - build_hierarchical_chunks() 生成 parent + leaf 两层            │
-    │  - parent: 大上下文块，供 small-to-big 展开                       │
-    │  - leaf:   小召回块，供向量检索                                    │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段6: 向量化（Embedding）                                         │
-    │  - 只对 leaf chunk 的 retrieval_content 做 embedding               │
-    │  - retrieval_content 已注入父级主题前缀，检索效果更好               │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段7: 入库                                                        │
-    │  - 先插入 parent chunk（db.flush 获取真实 ID）                     │
-    │  - 再插入 leaf chunk（parent_chunk_id 关联到 parent）              │
-    │  - 更新 document.chunk_count 和 status = ready                    │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段8: 重建 FAISS 索引                                             │
-    │  - sync_user_faiss_index() 将该用户所有 leaf chunk 写入索引        │
-    │  - 索引失败不影响上传成功（幂等操作，下次检索时会回退到暴力检索）    │
-    └──────────────────────┬───────────────────────────────────────────┘
-                           │
-                           ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ 阶段9: 返回结果                                                    │
-    │  - 成功: status=ready, 含 chunk_count                             │
-    │  - 失败: status=failed, 含 error_message                          │
-    └──────────────────────────────────────────────────────────────────┘
-
-    ────────────────────────────────────────────────────────────────────
-    示例场景：
-    ────────────────────────────────────────────────────────────────────
-
-    【场景1：上传一个 PDF 文件】
-    请求:
-        POST /api/knowledge/upload
-        Content-Type: multipart/form-data
-        file: "年度报告.pdf" (二进制内容)
-
-    响应（成功）:
-        {
-            "data": {
-                "id": 42,
-                "name": "年度报告.pdf",
-                "file_type": "pdf",
-                "status": "ready",
-                "chunk_count": 35,
-                "error_message": ""
-            }
-        }
-
-    数据库变化:
-        knowledge_documents 表新增 1 条记录（status=ready）
-        knowledge_chunks 表新增 35 条记录（1 parent + 34 leaf）
-        磁盘新增: uploads/a1b2c3d4.pdf, faiss/user_1.faiss, faiss/user_1.json
-
-    【场景2：上传不支持的文件类型】
-    请求:
-        POST /api/knowledge/upload
-        file: "image.png"
-
-    响应（失败）:
-        HTTP 400
-        {"detail": "Invalid file type"}
-
-    【场景3：文件解析失败】
-    请求:
-        POST /api/knowledge/upload
-        file: "corrupted.pdf"  (内容损坏的 PDF)
-
-    响应（失败）:
-        {
-            "data": {
-                "id": 43,
-                "name": "corrupted.pdf",
-                "status": "failed",
-                "chunk_count": 0,
-                "error_message": "Loader did not produce any document"
-            }
-        }
-        # 注意：返回 HTTP 200，但 status=failed，前端通过 status 字段判断成功与否
-
-    ────────────────────────────────────────────────────────────────────
-    设计决策说明：
-    ────────────────────────────────────────────────────────────────────
-    1. 为什么先插入 parent，flush 后再插入 leaf？
-       leaf 需要 parent_chunk_id 外键，在 parent 真正入库前拿不到这个 ID。
-       flush() 将 SQL 发送到数据库但不提交事务，此时就能拿到 parent.id，
-       而万一后续步骤失败，整个事务回滚（rollback），不会产生孤立数据。
-
-    2. 为什么只对 leaf 做 embedding，parent 不做？
-       parent 是"大上下文块"，在 small-to-big 检索策略中只用于展开上下文，
-       不参与向量检索。把 parent 也做 embedding 会浪费 GPU/API 调用成本，
-       且检索结果会冗余。
-
-    3. 为什么 FAISS 索引重建失败不影响上传？
-       sync_user_faiss_index 内部 try-catch 了异常，不会向外抛出。
-       即使 FAISS 索引没建成功，检索时也可以回退到暴力全量计算（brute-force）。
-       这是"优雅降级"的设计。
-
-    4. 为什么失败时也返回 200 而不是 4xx/5xx？
-       失败时 db 事务已回滚，但 document 记录被更新为 status=failed 并保留。
-       用户可以在列表中看到这个失败记录，便于排查问题。
-       返回 200 + status=failed 让前端逻辑更统一（统一处理 data.status 字段）。
+    前端体验变化：
+      - 以前：上传 50MB PDF → 转圈 45 秒 + 偶尔超时
+      - 现在：1 秒内返回 document_id + 进度条百分比，用户可以切页面做别的
     """
-    # ========== 阶段1: 文件校验 ==========
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    # 提取文件扩展名，检查是否在白名单中
     file_type = get_file_type(file.filename)
     if file_type not in ALLOWED_FILE_TYPES:
         raise HTTPException(status_code=400, detail="Invalid file type")
 
-    # ========== 阶段2: 文件落盘 ==========
     upload_dir = ensure_upload_dir()
-    # 生成唯一文件名: {32位uuid}.{原始扩展名}，避免文件名冲突
-    # 例: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.pdf"
     stored_name = f"{uuid.uuid4().hex}.{file_type}"
     stored_path = upload_dir / stored_name
-
-    # 读取文件内容并写入磁盘
     content = await file.read()
     stored_path.write_bytes(content)
 
-    # ========== 阶段3: 创建数据库记录（status = uploaded） ==========
+    # 阶段A：先算 MD5，做去重（避免相同文件重复解析/embedding 浪费钱）
+    file_md5 = calc_file_md5(file_bytes=content)
+    file_size = len(content)
+    dup = find_duplicate_document(db, user_id=user.id, file_md5=file_md5)
+    if dup is not None:
+        resp = _enrich_doc_with_progress(dup)
+        resp["is_duplicate_hit"] = True
+        resp["duplicate_of_document_id"] = dup.id
+        resp["error_message"] = f"检测到重复文件，命中已有文档 #{dup.id}，跳过重复导入"
+        return {"data": resp}
+
+    # 阶段B：写 DB 行（status=uploaded），立刻返回
     document = KnowledgeDocuments(
         user_id=user.id,
-        name=file.filename,              # 保留用户上传时的原始文件名
-        file_path=str(stored_path),      # 磁盘上的实际存储路径
+        name=file.filename,
+        file_path=str(stored_path),
         file_type=file_type,
-        status=DOCUMENT_STATUS_UPLOADED,  # 初始状态: 已上传，待解析
+        status=DOCUMENT_STATUS_UPLOADED,
+        file_md5=file_md5,
+        file_size_bytes=file_size,
     )
     db.add(document)
     db.commit()
-    db.refresh(document)  # 刷新获取自动生成的 id
+    db.refresh(document)
 
-    try:
-        # ========== 阶段4: 文档解析（status → parsing） ==========
-        document.status = DOCUMENT_STATUS_PARSING
-        db.commit()
+    # 阶段C：把耗时工作加入后台（响应发送后才会执行）
+    #   注意：这里用 copy()，因为 fastapi 在响应发送后可能释放 content 的引用
+    background_tasks.add_task(
+        run_document_import_pipeline,
+        document_id=document.id,
+        user_id=user.id,
+        stored_path=str(stored_path),
+        file_type=file_type,
+        file_name=file.filename,
+        raw_content_bytes=content,  # 内容已经有了，避免 Worker 再读一次文件
+    )
 
-        # ProjectDocumentLoader 内部会根据 file_type 选择对应的解析器:
-        #   pdf → PyPDFLoader
-        #   docx → Docx2txtLoader
-        #   xlsx/xls → Excel 解析器
-        #   md/txt → 文本读取
-        # 解析结果统一封装为 LangChain Document 对象
-        loader = ProjectDocumentLoader(
-            str(stored_path),
-            file_type=file_type,
-            metadata={
-                "document_id": document.id,
-                "document_name": file.filename,
-            },
-        )
-        # lazy_load(): 惰性加载，逐页/逐段读取，避免大文件撑爆内存
-        loaded_documents = list(loader.lazy_load())
-        if not loaded_documents:
-            raise RuntimeError("Loader did not produce any document")
+    return {"data": _enrich_doc_with_progress(document)}
 
-        # 取第一个（也是唯一一个）解析结果
-        source_document = loaded_documents[0]
 
-        # 提取结构化解析数据:
-        #   parsed_document: 包含 pages/sections 等结构化信息（PDF/Excel 等才有）
-        #   page_content:   纯文本全文（兜底）
-        parsed = source_document.metadata.get("parsed_document") or {
-            "full_text": source_document.page_content,
-            "pages": [],        # 按页的内容列表（PDF/PPTX）
-            "sections": [],     # 按章节/工作表的内容列表（Excel/Word/Markdown）
-            "metadata": {},     # 源文件元信息（作者、创建时间等）
+@router.get("/{document_id}/status", response_model=dict)
+def get_document_import_status(
+    document_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    前端每 1 秒轮询一次这个接口，获取异步导入进度。
+
+    返回示例（正在 embedding 阶段）:
+    {
+      "data": {
+        "id": 42,
+        "status": "embedding",
+        "total_chunks": 100,
+        "processed_chunks": 72,
+        "failed_chunks": 0,
+        "import_progress_percent": 73.2
+      },
+      "failed_chunk_rows": [
+        // 如果有失败会把 KnowledgeChunkFailures 列出来，前端可展示"第73个chunk embedding失败"
+        {"id": 9, "chunk_index_ref": 73, "step_name": "embedding_api",
+         "retry_count": 3, "error_message": "..."}
+      ]
+    }
+    """
+    doc = db.query(KnowledgeDocuments).filter(
+        KnowledgeDocuments.id == document_id,
+        KnowledgeDocuments.user_id == user.id,
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    failed_rows = (
+        db.query(KnowledgeChunkFailures)
+        .filter(KnowledgeChunkFailures.document_id == document_id)
+        .order_by(KnowledgeChunkFailures.created_at.asc())
+        .all()
+    )
+    failed_json = [
+        {
+            "id": f.id, "chunk_id": f.chunk_id, "chunk_index_ref": f.chunk_index_ref,
+            "step_name": f.step_name, "status": f.status,
+            "retry_count": f.retry_count,
+            "error_type": f.error_type, "error_message": f.error_message[:300],
+            "retrieval_content_preview": f.retrieval_content_preview[:120],
+            "created_at": f.created_at.isoformat(),
+            "last_retry_at": f.last_retry_at.isoformat() if f.last_retry_at else None,
         }
-        full_text = source_document.page_content or ""
+        for f in failed_rows
+    ]
 
-        # 保存全文到数据库（用于后续全文检索或展示）
-        document.content_text = full_text
-        document.error_message = ""
-
-        # ========== 阶段5: 分层分块（status → chunking） ==========
-        document.status = DOCUMENT_STATUS_CHUNKING
-        db.commit()
-
-        # build_hierarchical_chunks 产出 parent + leaf 两层 chunk:
-        #   输出是一个扁平列表，结构如下:
-        #   [
-        #     {"chunk_role": "parent", "local_parent_key": "parent_0", ...},  # 父块0
-        #     {"chunk_role": "leaf",   "local_parent_key": "parent_0", ...},  # 父块0的第1个子块
-        #     {"chunk_role": "leaf",   "local_parent_key": "parent_0", ...},  # 父块0的第2个子块
-        #     {"chunk_role": "parent", "local_parent_key": "parent_1", ...},  # 父块1
-        #     {"chunk_role": "leaf",   "local_parent_key": "parent_1", ...},  # 父块1的第1个子块
-        #     ...
-        #   ]
-        chunk_items = build_hierarchical_chunks(
-            parsed,
-            file_type=file_type,
-            chunk_size=settings.RAG_CHUNK_SIZE,      # 默认 500 字符
-            overlap=settings.RAG_CHUNK_OVERLAP,       # 默认 100 字符
-            use_semantic_chunking=os.getenv(
-                "USE_SEMANTIC_CHUNKING",
-                "0",
-            ).strip().lower() in {"1", "true", "yes", "on"},
-        )
-
-        if not chunk_items:
-            raise RuntimeError("No chunk items produced")
-
-        # 按角色分组: parent 和 leaf 分别处理
-        parent_items = [item for item in chunk_items if item["chunk_role"] == KNOWLEDGE_CHUNK_ROLE_PARENT]
-        leaf_items = [item for item in chunk_items if item["chunk_role"] == KNOWLEDGE_CHUNK_ROLE_LEAF]
-
-        # ========== 阶段6: 入库（先保存 parent/leaf，再生成 embedding） ==========
-        # embedding 服务不可用时也要保留已经解析出的 chunk，便于后续重试或关键词检索。
-        leaf_rows: list[KnowledgeChunks] = []
-
-        # 6.1 先插入 parent chunk
-        #     使用 db.flush() 而非 commit()，这样 parent.id 立即可用
-        #     但万一后续失败，整个事务回滚，不会留下孤儿数据
-        local_parent_id_map: dict[str, int] = {}  # local_parent_key → 数据库 id 的映射
-        for item in parent_items:
-            row = KnowledgeChunks(
-                document_id=document.id,
-                user_id=user.id,
-                chunk_index=int(item["chunk_index"]),       # 全局序号，用于排序
-                chunk_role=item["chunk_role"],              # "parent"
-                parent_chunk_id=None,                        # parent 没有上级
-                parent_title=item["parent_title"],           # 如 "第一章 引言"
-                block_type=item["block_type"],               # "text" 或 "table"
-                child_index=int(item["child_index"]),        # parent 固定为 0
-                table_row_from=item["table_row_from"],       # 表格行号（仅 table 有值）
-                table_row_to=item["table_row_to"],
-                content=item["content"],                     # 父块的完整文本
-                retrieval_content="",                        # parent 不参与检索，留空
-                start_offset=int(item["start_offset"]),      # 在原文中的字符偏移
-                end_offset=int(item["end_offset"]),
-                source_page=item["source_page"],             # 来源页码（PDF 类才有）
-                source_section=item["source_section"] or "", # 来源章节
-                embedding_json="",                           # parent 不做 embedding
-            )
-            db.add(row)
-            db.flush()  # 发送 SQL 但不提交，获取 row.id
-            # 建立映射: "parent_0" → 1001, "parent_1" → 1002, ...
-            local_parent_id_map[item["local_parent_key"]] = row.id
-
-        # 6.2 再插入 leaf chunk，关联 parent_chunk_id
-        for item in leaf_items:
-            parent_chunk_id = local_parent_id_map.get(item["local_parent_key"])
-
-            row = KnowledgeChunks(
-                document_id=document.id,
-                user_id=user.id,
-                chunk_index=int(item["chunk_index"]),
-                chunk_role=item["chunk_role"],              # "leaf"
-                parent_chunk_id=parent_chunk_id,             # 指向父块的数据库 ID
-                parent_title=item["parent_title"],
-                block_type=item["block_type"],
-                child_index=int(item["child_index"]),        # 该 leaf 在父块中的序号（从1开始）
-                table_row_from=item["table_row_from"],
-                table_row_to=item["table_row_to"],
-                content=item["content"],                     # 叶子块的原始文本
-                retrieval_content=item["retrieval_content"], # 增强检索文本（含父级主题前缀）
-                start_offset=int(item["start_offset"]),
-                end_offset=int(item["end_offset"]),
-                source_page=item["source_page"],
-                source_section=item["source_section"] or "",
-                embedding_json="",  # embedding 在 chunk 持久化后单独写入
-            )
-            db.add(row)
-            leaf_rows.append(row)
-
-        # 先提交 chunk，避免 embedding 服务故障导致 chunk 一并回滚。
-        document.chunk_count = len(chunk_items)
-        document.status = DOCUMENT_STATUS_CHUNKING
-        db.commit()
-        db.refresh(document)
-
-        # ========== 阶段7: 向量化（只对 leaf chunk 做 embedding） ==========
-        embedding_error = None
-        leaf_embeddings: list[list[float]] = []
-        try:
-            embeddings_service = ProjectEmbeddings()
-            if leaf_items:
-                leaf_embeddings = await embeddings_service.aembed_documents(
-                    [item["retrieval_content"] for item in leaf_items]
-                )
-
-            if len(leaf_embeddings) != len(leaf_items):
-                raise RuntimeError("Embedding result count does not match leaf chunk count")
-        except Exception as exc:
-            embedding_error = exc
-            leaf_embeddings = [[] for _ in leaf_items]
-
-        for row, embedding in zip(leaf_rows, leaf_embeddings):
-            row.embedding_json = json.dumps(embedding, ensure_ascii=False) if embedding else ""
-
-        document.error_message = str(embedding_error) if embedding_error else ""
-        document.status = DOCUMENT_STATUS_FAILED if embedding_error else DOCUMENT_STATUS_READY
-        db.commit()
-        db.refresh(document)
-
-        # ========== 阶段8: 重建 FAISS 索引 ==========
-        # 将该用户所有 leaf chunk 的向量写入 FAISS 索引文件
-        # 失败不影响上传（sync_user_faiss_index 内部已 try-catch）
-        if not embedding_error:
-            sync_user_faiss_index(db, user_id=user.id)
-
-    except Exception as exc:
-        # ========== 异常处理: 回滚 + 标记失败 ==========
-        db.rollback()  # 回滚所有未提交的 chunk 数据
-
-        # 重新查询 document（因为 rollback 后之前的 document 对象可能已失效）
-        failed_doc = (
-            db.query(KnowledgeDocuments)
-            .filter(KnowledgeDocuments.id == document.id, KnowledgeDocuments.user_id == user.id)
-            .first()
-        )
-        if failed_doc:
-            # 标记为失败，保留错误信息供用户排查
-            failed_doc.status = DOCUMENT_STATUS_FAILED
-            failed_doc.error_message = str(exc)
-            db.commit()
-            db.refresh(failed_doc)
-            document = failed_doc
-
-    # ========== 阶段9: 返回结果 ==========
-    # 无论成功还是失败，都返回 document 对象
-    # 前端通过 status 字段判断: "ready"=成功, "failed"=失败
-    return {"data": KnowledgeDocumentResponse.model_validate(document)}
+    return {
+        "data": _enrich_doc_with_progress(doc),
+        "failed_chunk_rows": failed_json,
+    }
 
 
 @router.get("/list")

@@ -1,10 +1,39 @@
 """
-向量索引服务模块
+向量索引服务模块（支持 ANN 近似最近邻索引升级）
 
 该模块提供基于 FAISS（Facebook AI Similarity Search）的向量索引功能，
-用于实现高效的文本语义检索。主要功能包括：
-1. 从数据库加载知识块的嵌入向量并构建 FAISS 索引
+用于实现高效的文本语义检索。从原来的纯暴力 IndexFlatIP 升级为支持：
+  - Flat：暴力精确搜索，O(N)，适合<1万条
+  - HNSW：层次化小世界图，O(logN)，推荐默认（精度/速度平衡最好）
+  - IVF：倒排文件索引，O(logN)，构建速度比HNSW快
+  - IVF_PQ：IVF + 乘积量化压缩，超大规模时内存优化
+
+主要功能：
+1. 从数据库加载知识块的嵌入向量并构建 FAISS 索引（4种类型可选）
 2. 对用户查询进行语义搜索，返回最相关的知识块
+3. 智能降级：数据量小时自动用 Flat（精确搜索，没必要ANN）
+4. 元数据兼容：新旧格式索引文件都能加载
+
+索引选型决策树（配置 FAISS_INDEX_TYPE 时参考）：
+┌──────────────────────────────────────────────────────────────────────┐
+│  单用户 chunk 数 < 1万   →  Flat（精确，ANN开销反而更大）            │
+│  单用户 chunk 数 1万~500万 →  HNSW64（推荐默认，Recall@10 ≈ 99%）    │
+│  单用户 chunk 数 50万~500万 →  IVF1024（构建快3倍，Recall@10 ≈ 95%） │
+│  单用户 chunk 数 > 500万   →  IVF4096,PQ64（压缩94%内存空间）        │
+└──────────────────────────────────────────────────────────────────────┘
+
+环境变量配置示例（写入项目根目录的 .env 文件）：
+    # 方案A：通用推荐（默认就是这个，不用写也行）
+    FAISS_INDEX_TYPE=HNSW
+    FAISS_HNSW_M=64
+
+    # 方案B：极速构建（赶时间，索引5分钟内要建完）
+    FAISS_INDEX_TYPE=IVF
+    FAISS_IVF_NLIST=1024
+
+    # 方案C：内存紧张（服务器内存<8GB，数据又多）
+    FAISS_INDEX_TYPE=IVF_PQ
+    FAISS_PQ_BYTES=64
 
 依赖说明：
 - FAISS：Facebook 开源的高效相似性搜索库
@@ -20,6 +49,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+# 用于记录索引创建时间，方便排查新旧索引
+from datetime import datetime
 
 # SQLAlchemy 数据库会话
 from sqlalchemy.orm import Session
@@ -185,6 +216,251 @@ def _normalize_matrix(matrix: Any):
     return matrix
 
 
+def _create_faiss_index(dimension: int, num_vectors: int):
+    """
+    根据配置创建 FAISS 索引对象（ANN 近似最近邻索引工厂函数）
+
+    这是本次升级的核心函数，替代原来硬编码的 `faiss.IndexFlatIP(dimension)`。
+    支持 4 种索引类型，并且会根据数据规模自动做智能降级（数据太小没必要用ANN）。
+
+    ┌────────────────────────────────────────────────────────────────────┐
+    │                        索引创建流程示意                             │
+    ├────────────────────────────────────────────────────────────────────┤
+    │                                                                    │
+    │   输入: dimension=1536, num_vectors=50000                          │
+    │           │                                                        │
+    │           ▼                                                        │
+    │   ┌─────────────────┐                                              │
+    │   │ 读取配置类型     │ → FAISS_INDEX_TYPE (默认 HNSW)              │
+    │   └────────┬────────┘                                              │
+    │            │                                                       │
+    │            ▼                                                       │
+    │   ┌─────────────────┐                                              │
+    │   │ 智能降级判断？   │ → num_vectors < 10000 ?                      │
+    │   │                 │   是 → 强制用 Flat（精确且更快）              │
+    │   └────────┬────────┘   否 → 按配置类型走                          │
+    │            │                                                       │
+    │            ├───────────────────────────────────────┐               │
+    │            ▼                                       ▼               │
+    │   ┌─────────────────────┐              ┌─────────────────────┐    │
+    │   │ 类型=HNSW           │              │ 类型=IVF             │    │
+    │   │ IndexHNSWFlat       │              │ IndexIVFFlat         │    │
+    │   │ - M=64 邻居数       │              │ - nlist=1024 桶数    │    │
+    │   │ - efSearch=128      │              │ - nprobe=16 探查桶   │    │
+    │   │ - is_trained=True   │              │ - quantizer=FlatIP   │    │
+    │   │ (无需训练，直接add) │              │ - is_trained=False ⚠ │    │
+    │   └─────────────────────┘              └──────────┬──────────┘    │
+    │                                                    │               │
+    │                                                    ▼               │
+    │                                              需要先 train()        │
+    │                                              K-means 找聚类中心    │
+    │                                              然后才能 add()        │
+    │                                                    │               │
+    │   ┌─────────────────────┐                            │               │
+    │   │ 类型=IVF_PQ         │                            │               │
+    │   │ IndexIVFPQ          │                            │               │
+    │   │ + 乘积量化压缩      │                            │               │
+    │   │ 6KB/条 → 64字节/条  │                            │               │
+    │   │ is_trained=False ⚠  │                            │               │
+    │   └─────────────────────┘                            │               │
+    │                                                    │               │
+    │   ┌─────────────────────┐                            │               │
+    │   │ 类型=Flat           │                            │               │
+    │   │ IndexFlatIP         │                            │               │
+    │   │ 暴力精确 O(N)       │                            │               │
+    │   │ is_trained=True     │                            │               │
+    │   └─────────────────────┘                            │               │
+    │                                                        │               │
+    │            ┌───────────────────────────────────────────┘               │
+    │            ▼                                                           │
+    │   返回 faiss.Index 对象（可能 trained 或 未trained）                   │
+    │   调用方需要检查 index.is_trained，未trained的先 train(matrix) 再 add │
+    └────────────────────────────────────────────────────────────────────────┘
+
+    Args:
+        dimension: 向量维度（如 768 / 1024 / 1536）
+        num_vectors: 待入库的向量总数，用于智能降级和参数自动调优
+
+    Returns:
+        faiss.Index: 创建好的 FAISS 索引对象（未添加任何向量）
+
+    ═══════════════════════════════════════════════════════════════════════
+    使用示例（单独调用这个函数做测试）：
+    ═══════════════════════════════════════════════════════════════════════
+
+    >>> # 示例1：50万条向量，默认HNSW
+    >>> index = _create_faiss_index(dimension=1536, num_vectors=500000)
+    >>> type(index).__name__
+    'IndexHNSWFlat'
+    >>> index.hnsw.M
+    64
+
+    >>> # 示例2：只有5000条 → 智能降级为Flat（精确搜索）
+    >>> index = _create_faiss_index(dimension=1536, num_vectors=5000)
+    >>> type(index).__name__
+    'IndexFlatIP'
+
+    >>> # 示例3：IVF类型（需要先train）
+    >>> import numpy as np
+    >>> index = _create_faiss_index(dimension=1536, num_vectors=100000)
+    >>> # 假设 settings.FAISS_INDEX_TYPE="IVF"
+    >>> index.is_trained  # IVF默认没训练
+    False
+    >>> # 需要喂一批数据做K-means聚类（找桶中心）
+    >>> data = np.random.randn(100000, 1536).astype('float32')
+    >>> faiss.normalize_L2(data)
+    >>> index.train(data)  # 这步要几秒~几分钟
+    >>> index.is_trained
+    True
+    >>> index.add(data)   # 训练好后才能加向量
+
+    ═══════════════════════════════════════════════════════════════════════
+    """
+    # 读取配置的索引类型，统一转大写方便比较
+    index_type = settings.FAISS_INDEX_TYPE.upper()
+
+    # ─────────────────────────────────────────────────────────
+    # 智能降级：数据量太小时，没必要用 ANN，Flat 反而更快且精确
+    #   - ANN 索引本身有构建开销（HNSW建图/IVF聚类）
+    #   - ANN 搜索也有常数项开销（遍历邻居图/算桶距离）
+    #   - 经验阈值：<1万条时，Flat 的 O(N) 暴力扫描反而比 ANN 的 O(logN) 快
+    # ─────────────────────────────────────────────────────────
+    if num_vectors < 10000:
+        index_type = "FLAT"
+
+    # ─────────────────────────────────────────────────────────
+    # 分支 1：Flat —— 暴力精确搜索
+    #   - 复杂度：O(N)，每条向量都和 query 算一遍内积
+    #   - 精度：100% 精确，没有任何召回损失
+    #   - 适用：<1万条，或者对 Recall 要求 100% 的场景
+    # ─────────────────────────────────────────────────────────
+    if index_type == "FLAT":
+        # IndexFlatIP = Inner Product（内积）索引
+        # 因为我们的向量都做过 L2 归一化，内积 == 余弦相似度
+        index = faiss.IndexFlatIP(dimension)
+        return index
+
+    # ─────────────────────────────────────────────────────────
+    # 分支 2：HNSW —— 层次化小世界图（推荐默认）
+    #   - 复杂度：O(log N)，多层贪心导航
+    #   - 结构：3~4层图，上层稀疏（枢纽），下层稠密（全量节点）
+    #   - 精度：Recall@10 ≈ 98% ~ 99.5%（取决于efSearch）
+    #   - 优点：无需训练（is_trained=True），增量更新友好
+    #   - 缺点：构建慢（比IVF慢3~5倍），内存比Flat大30%左右
+    # ─────────────────────────────────────────────────────────
+    if index_type == "HNSW":
+        # METRIC_INNER_PRODUCT：用内积度量（L2归一化后=余弦相似度）
+        # 注意：FAISS 默认是 METRIC_L2（欧氏距离），必须显式指定内积！
+        index = faiss.IndexHNSWFlat(
+            dimension,                      # 向量维度
+            settings.FAISS_HNSW_M,          # 每个节点的邻居数 M（默认64）
+            faiss.METRIC_INNER_PRODUCT      # 度量方式：内积
+        )
+
+        # 设置 HNSW 构建参数（影响索引质量）
+        # efConstruction：构建每个节点时，搜索候选邻居的宽度
+        #   类比：给每个人找朋友时，先大范围看多少个人选再挑最亲近的M个
+        index.hnsw.efConstruction = settings.FAISS_HNSW_EF_CONSTRUCTION
+
+        # efSearch：查询时的搜索宽度
+        #   类比：找"最像的10个人"时，沿途多看多少个候选再定最终结果
+        #   经验：efSearch >= top_k * 1.5 比较稳妥；FAISS内部也会自动提升
+        index.hnsw.efSearch = settings.FAISS_HNSW_EF_SEARCH
+
+        # HNSW 不需要 train 步骤（和 Flat 一样）
+        # 因为它是增量式建图的，add 的过程就是构建的过程
+        return index
+
+    # ─────────────────────────────────────────────────────────
+    # 分支 3：IVF —— 倒排文件索引（Inverted File）
+    #   - 两阶段搜索：
+    #     阶段1：计算 query 到 nlist 个"桶中心"的距离，取最近的 nprobe 个桶
+    #     阶段2：只在选中的桶内，做暴力精搜（Flat）
+    #   - 精度：Recall@10 ≈ 93% ~ 97%（取决于nprobe）
+    #   - 优点：构建速度快（K-means聚类比HNSW建图快3~5倍）
+    #   - 缺点：⚠️ 必须先 train() 才能 add()，否则报错
+    #           增量添加效果差（新向量可能不属于旧聚类中心）
+    # ─────────────────────────────────────────────────────────
+    if index_type in ("IVF", "IVF_FLAT"):
+        # 根据数据规模自动调优 nlist（用户配置的值可能不合适）
+        #   原则：平均每个桶 39~312 条向量（sqrt(N)~4*sqrt(N)个桶）
+        nlist = settings.FAISS_IVF_NLIST
+        if num_vectors < 50000:
+            nlist = min(nlist, 256)       # 5万条以下：最多256个桶
+        elif num_vectors < 200000:
+            nlist = min(nlist, 1024)      # 20万条以下：最多1024个桶
+        # 100万条以上：用配置的默认值（4096左右比较合适）
+
+        # quantizer（粗量化器）：存储桶中心，用于计算"query属于哪个桶"
+        # 用 IndexFlatIP 作为粗量化器（内积距离）
+        quantizer = faiss.IndexFlatIP(dimension)
+
+        # 创建 IVFFlat 索引（桶内不压缩，还是存储原始向量）
+        index = faiss.IndexIVFFlat(
+            quantizer,                      # 粗量化器（桶中心）
+            dimension,                      # 向量维度
+            nlist,                          # 聚类中心数 = 桶的总数
+            faiss.METRIC_INNER_PRODUCT      # 度量方式：内积
+        )
+
+        # nprobe：查询时探查多少个桶
+        #   nprobe=1   → 只查最近的1个桶，最快，漏召回风险高
+        #   nprobe=16  → 默认，查最近16个桶，平衡
+        #   nprobe=nlist → 查所有桶 = 退化成Flat暴力搜索
+        index.nprobe = settings.FAISS_IVF_NPROBE
+
+        # ⚠️ IVF 索引默认 is_trained=False，必须先 index.train(matrix) 才能 add
+        return index
+
+    # ─────────────────────────────────────────────────────────
+    # 分支 4：IVF_PQ —— IVF + 乘积量化（Product Quantization）
+    #   在 IVF 的基础上，对向量本身做有损压缩，大幅节省内存。
+    #
+    #   压缩原理（1536维，PQ64 示例）：
+    #     原始向量 [1536 float32] = 6144 字节 = 6 KB/条
+    #       ↓ 切分成 64 个子空间，每个子空间 24 维
+    #       ↓ 每个子空间用 K-means 聚类出 256 个"代表中心"
+    #       ↓ 每个子空间不用存原始24个float，只存1个字节(0~255)指向中心ID
+    #     压缩后 [64 uint8] = 64 字节/条
+    #     压缩率 = 64/6144 ≈ 1.04% （节省 98.96% 的存储空间！）
+    #
+    #   代价：精度损失（Recall@10 再降 5~15%），因为是有损压缩
+    #   适用场景：内存实在装不下原始向量，数据量 > 500万条
+    # ─────────────────────────────────────────────────────────
+    if index_type in ("IVF_PQ", "IVFPQ"):
+        nlist = settings.FAISS_IVF_NLIST
+        pq_bytes = settings.FAISS_PQ_BYTES
+
+        # 安全校验：PQ 字节数不能超过维度（极端情况的兜底）
+        # 每个子空间至少 1 维，所以最多 dim 字节（压缩率最低）
+        if pq_bytes > dimension:
+            pq_bytes = dimension // 16  # 兜底：每16维压缩成1字节
+
+        quantizer = faiss.IndexFlatIP(dimension)
+
+        # IndexIVFPQ 参数：
+        #   - 第4个参数：pq_bytes = 乘积量化的子空间数（每个子空间存1字节）
+        #   - 第5个参数：8 = 每个子空间用 8bit 编码（=256个聚类中心，标准值）
+        index = faiss.IndexIVFPQ(
+            quantizer,
+            dimension,
+            nlist,
+            pq_bytes,
+            8,                          # 8bit = 256 中心，一般不需要改
+            faiss.METRIC_INNER_PRODUCT
+        )
+        index.nprobe = settings.FAISS_IVF_NPROBE
+
+        # ⚠️ IVF_PQ 同样需要 train()，且训练时间更长
+        #    训练时要同时学"桶中心"和"每个子空间的256个压缩中心"
+        return index
+
+    # ─────────────────────────────────────────────────────────
+    # 兜底：未知类型字符串 → 安全降级为 Flat（精确搜索不会错）
+    # ─────────────────────────────────────────────────────────
+    return faiss.IndexFlatIP(dimension)
+
+
 def _remove_user_index_files(user_id: int) -> None:
     """
     删除指定用户的索引文件和元数据文件
@@ -199,16 +475,48 @@ def _remove_user_index_files(user_id: int) -> None:
 
 def _load_metadata(user_id: int) -> list[dict[str, int]] | None:
     """
-    加载指定用户的索引元数据
+    加载指定用户的索引元数据（兼容新旧两种格式）
 
-    元数据是一个列表，每个元素包含 chunk_id 和 document_id，
-    用于将 FAISS 索引的行号映射回数据库中的知识块记录。
+    元数据用于将 FAISS 索引的行号（0,1,2...）映射回数据库中的 KnowledgeChunks.id。
+    支持两种 JSON 格式：
+
+    【旧格式 v1（纯列表）】—— 升级前已经存在的索引文件
+        [
+            {"chunk_id": 1001, "document_id": 88},
+            {"chunk_id": 1002, "document_id": 88},
+            ...
+        ]
+
+    【新格式 v2（带索引信息的dict）】—— 升级后新建的索引文件
+        {
+            "index_type": "HNSW",              # 构建时用的索引类型
+            "dimension": 1536,                 # 向量维度
+            "num_vectors": 50000,              # 向量总数
+            "created_at": "2026-08-12T10:30:00",  # 构建时间（排查问题用）
+            "chunks": [                        # ← 原来的映射列表放在这里
+                {"chunk_id": 1001, "document_id": 88},
+                ...
+            ]
+        }
 
     参数：
         user_id: 用户ID
 
     返回：
-        list[dict[str, int]] | None: 元数据列表，加载失败返回 None
+        list[dict[str, int]] | None: chunk 映射列表，加载失败返回 None
+
+    ═══════════════════════════════════════════════════════════════
+    示例：
+    >>> # 假设用户42的索引是升级前建的旧格式
+    >>> meta = _load_metadata(42)
+    >>> type(meta), len(meta)
+    (<class 'list'>, 150)
+    >>> meta[0]
+    {"chunk_id": 1001, "document_id": 88}
+
+    >>> # 升级后新建的索引，仍然返回同样的 chunks 列表
+    >>> # （索引信息对上层透明，兼容已有调用方）
+    ═══════════════════════════════════════════════════════════════
     """
     metadata_path = _metadata_file_path(user_id)
     if not metadata_path.exists():
@@ -219,10 +527,59 @@ def _load_metadata(user_id: int) -> list[dict[str, int]] | None:
     except (OSError, json.JSONDecodeError):
         return None
 
-    if not isinstance(payload, list):
+    # 分支 A：旧格式 v1 —— 根结点就是列表
+    if isinstance(payload, list):
+        return payload
+
+    # 分支 B：新格式 v2 —— 根结点是 dict，chunks 字段才是列表
+    if isinstance(payload, dict) and "chunks" in payload:
+        chunks = payload.get("chunks")
+        if isinstance(chunks, list):
+            return chunks
+
+    # 其他情况：格式异常（如被人手动篡改了 JSON）
+    return None
+
+
+def _load_metadata_info(user_id: int) -> dict | None:
+    """
+    加载索引元数据的「附加信息」（仅 v2 新格式有）。
+
+    用于调试/诊断场景，比如查一下这个索引是哪天建的、当时用了什么类型。
+    普通搜索流程不需要调用这个函数。
+
+    参数：
+        user_id: 用户ID
+
+    返回：
+        dict | None: 索引信息字典，包含 index_type/dimension/num_vectors/created_at
+                     旧格式索引或加载失败返回 None
+
+    示例：
+    >>> info = _load_metadata_info(user_id=42)
+    >>> if info:
+    ...     print(f"索引类型: {info['index_type']}")
+    ...     print(f"构建时间: {info['created_at']}")
+    ...     print(f"向量数量: {info['num_vectors']}")
+    """
+    metadata_path = _metadata_file_path(user_id)
+    if not metadata_path.exists():
         return None
 
-    return payload
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    # 只有新格式 v2（dict 带 info 字段）才有这些信息
+    if isinstance(payload, dict) and isinstance(payload.get("chunks"), list):
+        return {
+            "index_type": payload.get("index_type", "Flat"),
+            "dimension": payload.get("dimension"),
+            "num_vectors": payload.get("num_vectors"),
+            "created_at": payload.get("created_at"),
+        }
+    return None
 
 
 def _load_index(user_id: int):
@@ -416,17 +773,57 @@ def rebuild_user_faiss_index(db: Session, *, user_id: int) -> int:
         _remove_user_index_files(user_id)
         return 0
 
-    # ========== 6. 构建 FAISS 索引 ==========
+    # ========== 6. 构建 FAISS 索引（ANN 近似最近邻索引升级核心步骤）==========
     # 6.1 将向量列表转为 NumPy 矩阵，并做 L2 归一化
     #     归一化后，内积（Inner Product）等价于余弦相似度
     matrix = _normalize_matrix(np.asarray(vectors, dtype="float32"))
+    num_vectors = len(vectors)  # 用于 _create_faiss_index 的智能降级判断
 
-    # 6.2 创建 IndexFlatIP 索引
-    #     IndexFlatIP: 暴力内积索引，对所有向量做精确最近邻搜索
-    #     "Flat" 表示不压缩，精度最高但内存占用大
-    #     适合中小规模数据（< 10万条），如果需要更大规模可改用 IVF 或 HNSW
-    index = faiss.IndexFlatIP(dimension)
-    index.add(matrix)  # 将归一化后的向量矩阵加入索引
+    # 6.2 根据配置 + 数据规模，智能选择索引类型（Flat/HNSW/IVF/IVF_PQ）
+    #     替代原来的硬编码 faiss.IndexFlatIP(dimension)
+    #
+    # ╔══════════════════════════════════════════════════════════════════╗
+    # ║  新旧索引构建流程对比（关键差异！）                               ║
+    # ╠══════════════════════════════════════════════════════════════════╣
+    # ║                                                                  ║
+    # ║  【旧版 Flat 索引】（只有这一种）                                 ║
+    # ║      index = IndexFlatIP(dim)                                    ║
+    # ║      index.add(matrix)          ← 直接加，不需要训练             ║
+    # ║                                                                  ║
+    # ║  【新版 ANN 索引】（分两种情况）                                 ║
+    # ║                                                                  ║
+    # ║   情况A：Flat / HNSW（不需要训练）                               ║
+    # ║      index = _create_faiss_index(dim, N)                         ║
+    # ║      └─ index.is_trained → True ✅                               ║
+    # ║      index.add(matrix)      ← 直接加数据                         ║
+    # ║                                                                  ║
+    # ║   情况B：IVF / IVF_PQ（⚠️ 必须先训练！不能跳过！）              ║
+    # ║      index = _create_faiss_index(dim, N)                         ║
+    # ║      └─ index.is_trained → False ❌                              ║
+    # ║      index.train(matrix)    ← K-means 找聚类中心（几秒~几分钟） ║
+    # ║      └─ index.is_trained → True ✅                               ║
+    # ║      index.add(matrix)      ← 训练好后才能加数据                 ║
+    # ║                                                                  ║
+    # ║   为什么 IVF 需要 train？                                        ║
+    # ║     → 先有"1024个桶的中心点"，才知道新向量要丢进哪个桶           ║
+    # ║     → 就像先有图书分类法（经/史/子/集...），才知道新书放哪架   ║
+    # ╚══════════════════════════════════════════════════════════════════╝
+    index = _create_faiss_index(dimension, num_vectors)
+
+    # 6.3 【关键】需要训练的索引（IVF/IVF_PQ）先 train，再加向量
+    #     Flat 和 HNSW 的 is_trained 默认就是 True，这步自动跳过
+    if hasattr(index, "is_trained") and not index.is_trained:
+        # 喂全部向量做训练（K-means 聚类 / PQ 子空间聚类）
+        # 经验：训练数据不需要全量，采样10万条足够
+        # 但为了简单稳妥，我们直接用全量向量（实际差距不大）
+        index.train(matrix)
+
+    # 6.4 向量加入索引
+    #     - Flat：直接把原始向量复制进索引表
+    #     - HNSW：逐个插入节点，并构建邻居连接关系（较慢，是构建瓶颈）
+    #     - IVF：计算每个向量到桶中心的距离，扔进最近的桶
+    #     - IVF_PQ：扔进桶之前，先把向量压缩成PQ编码（再省内存）
+    index.add(matrix)
 
     # ========== 7. 原子写入索引文件和元数据文件 ==========
     # 7.1 获取文件路径
@@ -437,14 +834,28 @@ def rebuild_user_faiss_index(db: Session, *, user_id: int) -> int:
 
     # 7.2 写入临时文件
     faiss.write_index(index, str(index_tmp))      # FAISS 索引存为二进制 .faiss 文件
+
+    # 7.2.1 元数据改为 v2 新格式（带索引信息）
+    #   这样以后排查问题可以直接看 JSON，不用问"当时用的什么索引类型"
+    metadata_v2 = {
+        # 构建时实际生效的索引类型（可能被智能降级改了，比如<1万条自动Flat）
+        "index_type": settings.FAISS_INDEX_TYPE if num_vectors >= 10000 else "Flat(auto)",
+        "dimension": dimension,             # 向量维度
+        "num_vectors": num_vectors,         # 实际索引的 chunk 数量
+        "created_at": datetime.now().isoformat(timespec="seconds"),  # 构建时间
+        "chunks": metadata,                 # ← 原来的映射列表（兼容字段）
+    }
     metadata_tmp.write_text(
-        json.dumps(metadata, ensure_ascii=False),  # 元数据存为 JSON，ensure_ascii=False 保留中文
+        json.dumps(metadata_v2, ensure_ascii=False),  # ensure_ascii=False 保留中文
         encoding="utf-8",
     )
 
     # 7.3 原子替换：用临时文件覆盖正式文件
     #     .replace() 在 POSIX 上是原子操作（rename），不会出现半成品文件
     #     在 Windows 上如果目标文件存在会先删除再重命名，也是安全的
+    #
+    #     ⚠️ 这一步保证：即使构建中途崩溃（比如HNSW构建了一半断电），
+    #        旧的索引文件仍然完好无损，不会出现"索引文件一半损坏"的灾难。
     index_tmp.replace(index_path)
     metadata_tmp.replace(metadata_path)
 

@@ -6,6 +6,7 @@ from fastapi import UploadFile
 
 from api.routes import knowledge
 from core.db.models import (
+    DOCUMENT_STATUS_FAILED,
     DOCUMENT_STATUS_READY,
     KNOWLEDGE_CHUNK_ROLE_LEAF,
     KNOWLEDGE_CHUNK_ROLE_PARENT,
@@ -63,3 +64,46 @@ def test_upload_persists_chunk_embeddings(db_session, monkeypatch, tmp_path):
     first_embedding = json.loads(leaf_chunks[0].embedding_json)
     assert first_embedding[0] == 1.0
     assert len(first_embedding) == 2
+
+
+def test_upload_preserves_chunks_when_embeddings_fail(db_session, monkeypatch, tmp_path):
+    user = User(
+        email="kb-embedding-failure@example.com",
+        name="KB Embedding Failure User",
+        password_hash="not-used",
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    monkeypatch.setattr(knowledge, "ensure_upload_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        knowledge.ProjectDocumentLoader,
+        "load_parsed_document",
+        lambda self: {
+            "full_text": "First paragraph. Second paragraph. Third paragraph. " * 40,
+            "pages": [],
+            "sections": [],
+            "metadata": {},
+        },
+    )
+
+    async def fail_embeddings(self, texts):
+        raise ConnectionError("Connection error.")
+
+    monkeypatch.setattr(knowledge.ProjectEmbeddings, "aembed_documents", fail_embeddings)
+
+    upload = UploadFile(filename="embedding-failure.txt", file=BytesIO(b"sample text"))
+    response = asyncio.run(knowledge.upload_file(upload, db_session, user))
+
+    document = db_session.query(KnowledgeDocuments).one()
+    chunks = db_session.query(KnowledgeChunks).filter(
+        KnowledgeChunks.document_id == document.id
+    ).all()
+
+    assert document.status == DOCUMENT_STATUS_FAILED
+    assert document.error_message == "Connection error."
+    assert document.chunk_count > 0
+    assert len(chunks) == document.chunk_count
+    assert all(not chunk.embedding_json for chunk in chunks if chunk.chunk_role == KNOWLEDGE_CHUNK_ROLE_PARENT)
+    assert response["data"].status == DOCUMENT_STATUS_FAILED
